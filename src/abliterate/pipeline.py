@@ -41,12 +41,19 @@ def load_contrastive_prompts(cfg: Config) -> tuple[list[str], list[str]]:
 
 
 def build_directions(
-    cfg: Config, bundle: Optional[ModelBundle] = None
+    cfg: Config,
+    bundle: Optional[ModelBundle] = None,
+    *,
+    prompts: Optional[tuple[list[str], list[str]]] = None,
 ) -> tuple[ModelBundle, RefusalDirections]:
-    """Load the model (if needed) and compute per-layer candidate directions."""
+    """Load the model (if needed) and compute per-layer candidate directions.
+
+    ``prompts`` may be a preloaded ``(harmful, harmless)`` pair to avoid
+    re-reading and re-sampling the prompt sources.
+    """
     if bundle is None:
         bundle = load_model_and_tokenizer(cfg.model)
-    harmful, harmless = load_contrastive_prompts(cfg)
+    harmful, harmless = prompts if prompts is not None else load_contrastive_prompts(cfg)
 
     mean_harmful = collect_mean_activations(bundle, harmful, cfg.ablation, desc="harmful")
     mean_harmless = collect_mean_activations(bundle, harmless, cfg.ablation, desc="harmless")
@@ -141,9 +148,9 @@ def apply_and_save(
 
 def run(cfg: Config, *, select: str = "config", evaluate: bool = True) -> Path:
     """Full pipeline: directions -> select -> apply -> save (+ optional eval)."""
-    bundle, directions = build_directions(cfg)
+    harmful, harmless = load_contrastive_prompts(cfg)
+    bundle, directions = build_directions(cfg, prompts=(harmful, harmless))
 
-    harmful, _ = load_contrastive_prompts(cfg)
     val_prompts = harmful[: min(16, len(harmful))]
 
     index, scores = select_direction_index(

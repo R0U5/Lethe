@@ -68,8 +68,9 @@ def build_config(args: argparse.Namespace) -> Config:
         m.tokenizer_path = args.tokenizer
     if getattr(args, "dtype", None):
         m.dtype = args.dtype
-    if getattr(args, "device_map", None):
-        m.device_map = args.device_map
+    if getattr(args, "device_map", None) is not None:
+        dm = args.device_map.strip()
+        m.device_map = None if dm.lower() in ("", "none") else dm
     if getattr(args, "trust_remote_code", None):
         m.trust_remote_code = True
     # Data overrides

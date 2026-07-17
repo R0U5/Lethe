@@ -19,12 +19,20 @@ from dataclasses import dataclass
 from typing import Iterator, Optional
 
 import torch
+import transformers
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .config import ModelConfig
 
 logger = logging.getLogger("abliterate")
+
+# transformers >= 5 renamed the `torch_dtype` load kwarg to `dtype`.
+try:
+    _TF_MAJOR = int(transformers.__version__.split(".")[0])
+except (ValueError, AttributeError):  # pragma: no cover - defensive
+    _TF_MAJOR = 4
+_DTYPE_KWARG = "dtype" if _TF_MAJOR >= 5 else "torch_dtype"
 
 _DTYPES = {
     "float32": torch.float32,
@@ -105,9 +113,9 @@ def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
     logger.info("loading model from %s (dtype=%s)", cfg.path, cfg.dtype)
     model = AutoModelForCausalLM.from_pretrained(
         cfg.path,
-        torch_dtype=dtype,
         device_map=cfg.device_map,
         trust_remote_code=cfg.trust_remote_code,
+        **{_DTYPE_KWARG: dtype},
     )
 
     if cfg.lora_adapter:
@@ -196,6 +204,22 @@ def get_decoder_layers(model: nn.Module, cfg: Optional[ModelConfig] = None) -> n
     raise RuntimeError(
         "could not locate decoder layers; set model.decoder_layers_path in config"
     )
+
+
+def get_base_model(model: nn.Module) -> nn.Module:
+    """Return the base transformer, skipping the LM head.
+
+    Running the base module for ``output_hidden_states`` avoids the (large)
+    vocabulary projection that ``ForCausalLM.forward`` always computes. Uses the
+    model's own ``base_model_prefix`` (``model``, ``transformer``, ...), falling
+    back to the model itself when it is already a base module.
+    """
+    prefix = getattr(model, "base_model_prefix", None)
+    if prefix and hasattr(model, prefix):
+        base = getattr(model, prefix)
+        if isinstance(base, nn.Module):
+            return base
+    return model
 
 
 def get_embedding_module(model: nn.Module) -> nn.Embedding:

@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from .chat import format_batch
 from .config import AblationConfig
-from .model_utils import ModelBundle
+from .model_utils import ModelBundle, get_base_model
 
 logger = logging.getLogger("abliterate")
 
@@ -40,9 +40,10 @@ def collect_mean_activations(
 
     The mean is taken over ``prompts`` at token position ``cfg.position``.
     """
-    model = bundle.model
     tokenizer = bundle.tokenizer
-    device = _model_device(model)
+    # Run the base transformer only: we need hidden states, not vocab logits.
+    base = get_base_model(bundle.model)
+    device = _model_device(base)
 
     running_sum: Optional[torch.Tensor] = None
     count = 0
@@ -59,10 +60,12 @@ def collect_mean_activations(
             add_special_tokens=not bool(getattr(tokenizer, "chat_template", None)),
         ).to(device)
 
-        out = model(**enc, output_hidden_states=True, use_cache=False)
-        # tuple[L+1] of [B, S, H]; select the target position for each sequence.
-        stacked = torch.stack(out.hidden_states, dim=0)  # [L+1, B, S, H]
-        picked = stacked[:, :, cfg.position, :]          # [L+1, B, H]
+        out = base(**enc, output_hidden_states=True, use_cache=False)
+        # tuple[L+1] of [B, S, H]; pick the target position before stacking so we
+        # never materialize the full [L+1, B, S, H] tensor.
+        picked = torch.stack(
+            [h[:, cfg.position, :] for h in out.hidden_states], dim=0
+        )                                                # [L+1, B, H]
         batch_sum = picked.sum(dim=1).to(torch.float32)  # [L+1, H]
 
         if running_sum is None:
