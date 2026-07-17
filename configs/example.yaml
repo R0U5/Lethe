@@ -1,0 +1,42 @@
+# Example abliteration config.
+#
+# Run with:  abliterate run --config configs/example.yaml
+#
+# Any field can also be overridden on the command line (flags win).
+
+model:
+  # Any HF model id or local path. This can be a full model...
+  path: Qwen/Qwen2.5-1.5B-Instruct
+  # ...or a base model with a LoRA/PEFT adapter merged on top (reforge output):
+  # lora_adapter: ./reforge-runs/my-finetune/adapter
+  dtype: bfloat16
+  device_map: auto
+  trust_remote_code: false
+
+  # Only needed for architectures whose residual-writing modules are not in the
+  # built-in registry. Leave unset for llama/qwen/mistral/gemma/phi/gpt-neox/gpt2.
+  # attn_out_names: ["o_proj"]
+  # mlp_out_names: ["down_proj"]
+  # decoder_layers_path: "model.layers"
+
+data:
+  # File paths or built-in dataset names ("advbench", "alpaca").
+  # Omit to use the packaged sample sets under data/.
+  harmful: null
+  harmless: null
+  n_samples: 128
+  seed: 42
+
+ablation:
+  position: -1          # read activations at the last real token
+  batch_size: 16
+  max_length: 512
+  # Direction selection: explicit index wins; otherwise fractional depth.
+  layer_index: null
+  layer_fraction: 0.6
+  # Which residual-writing sites to orthogonalize.
+  ablate_embed: true
+  ablate_attn: true
+  ablate_mlp: true
+
+output_dir: output/abliterated-model
