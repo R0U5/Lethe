@@ -12,6 +12,13 @@ tendency to refuse is largely mediated by one direction in its residual stream,
 and removing that direction from everything the model writes into the residual
 stream suppresses refusals with minimal impact on other behavior.
 
+This tool goes beyond a single hand-picked direction. Its **`optimize`** mode
+runs an automated search (Optuna TPE) over the direction and per-layer,
+per-component ablation strengths, **co-minimizing refusals and KL divergence from
+the original model** — the approach shown to beat hand-tuned abliteration (cf.
+*Heretic*, Weidmann 2025). The result is a strong uncensoring with measurably
+less collateral damage than blanket orthogonalization.
+
 > Intended for models you own or are authorized to modify, for research,
 > red-teaming, and reducing over-refusal. You are responsible for how you use
 > the resulting weights.
@@ -23,14 +30,21 @@ stream suppresses refusals with minimal impact on other behavior.
    refusal-eliciting ("harmful") prompts and a set of benign ("harmless") prompts.
 3. **Compute** the per-layer refusal direction as the normalized difference of
    those means.
-4. **Select** a direction (by fractional depth, an explicit index, or an
-   automatic sweep that picks the layer that best suppresses refusals).
+4. **Select / optimize** the ablation:
+   - **`optimize` (recommended)** — search the direction plus a per-layer weight
+     *kernel*, separately for attention-out and MLP-down projections, scoring
+     each candidate by `refusal_rate + kl_weight · KL`. Partial, regularized
+     ablation preserves task-relevant information that full orthogonalization
+     destroys, and MLP interventions (which damage the model more) get their own
+     strength.
+   - or **fixed / fractional / auto** direction selection for a single-direction,
+     full-strength orthogonalization.
 5. **Apply** it, either as
-   - **permanent weight orthogonalization** — rewrite the embedding and every
-     attention-output / MLP-down projection so their output can't have a
-     component along the refusal direction; save the resulting model; or
-   - **inference-time hooks** — subtract the direction from the residual stream
-     on the fly, nothing written to disk (used for fast experimentation/eval).
+   - **permanent weight orthogonalization** (optionally weighted) — rewrite the
+     embedding and every attention-output / MLP-down projection; save the model; or
+   - **inference-time hooks** — subtract the (weighted) direction from the
+     residual stream on the fly, nothing written to disk (used for the optimizer's
+     trials and fast experimentation/eval).
 
 ### Why it's model-agnostic
 
@@ -45,8 +59,10 @@ stack. Exotic architectures can be pinned via config (`attn_out_names`,
 
 ```bash
 pip install -e .
-# optional: load standard research datasets (AdvBench / Alpaca) by name
-pip install -e ".[datasets]"
+# recommended: TPE optimizer (optuna) for `optimize` mode
+pip install -e ".[optimize]"
+# everything (optimizer + AdvBench/Alpaca/mlabonne dataset loaders)
+pip install -e ".[all]"
 ```
 
 Requires a floating-point (not quantized) model, since abliteration edits raw
@@ -55,24 +71,29 @@ weights.
 ## Quick start
 
 ```bash
-# Full pipeline: directions -> select -> orthogonalize -> save (+ before/after eval)
-abliterate run --model Qwen/Qwen2.5-1.5B-Instruct -o output/qwen-abliterated
+# Recommended: automated, KL-aware abliteration
+abliterate optimize --model Qwen/Qwen2.5-1.5B-Instruct -o output/qwen-abliterated
 
 # A reforge LoRA fine-tune: merge the adapter, then abliterate
-abliterate run --model meta-llama/Llama-3.1-8B --lora ./reforge-runs/my-finetune -o output/my-abliterated
+abliterate optimize --model meta-llama/Llama-3.1-8B --lora ./reforge-runs/my-finetune -o output/my-abliterated
+
+# Simple single-direction orthogonalization (no optimizer)
+abliterate run --model Qwen/Qwen2.5-1.5B-Instruct -o output/qwen-simple
 ```
 
 Or drive it with a config file:
 
 ```bash
-abliterate run --config configs/example.yaml
+abliterate run --config configs/example.yaml            # simple
+abliterate run --config configs/example.yaml --select optimize   # optimized
 ```
 
 ## CLI
 
 | Command | What it does |
 |---|---|
-| `abliterate run` | Full pipeline: compute directions, select, orthogonalize, save, evaluate. |
+| `abliterate optimize` | **Automated, KL-aware abliteration** (recommended): search direction + per-component weight kernels to co-minimize refusals and KL, apply the best, save. |
+| `abliterate run` | Single-direction pipeline: compute directions, select (`config`/`auto`/`optimize`), apply, save, evaluate. |
 | `abliterate directions` | Compute and save per-layer candidate directions (`.pt`). |
 | `abliterate apply` | Orthogonalize weights (optionally from a saved directions file) and save the model. |
 | `abliterate evaluate` | Measure refusal rate, optionally applying a direction via hooks. |
@@ -82,22 +103,37 @@ Common flags (any config field can be overridden on the command line):
 ```
 --model PATH            HF id or local path (full model, or base for --lora)
 --lora PATH             PEFT/LoRA adapter dir to merge (e.g. reforge output)
---harmful SRC           refusal-eliciting prompts: file, or "advbench"
---harmless SRC          benign prompts: file, or "alpaca"
+--harmful SRC           refusal-eliciting prompts: file, or "advbench"/"harmful_behaviors"
+--harmless SRC          benign prompts: file, or "alpaca"/"harmless_alpaca"
 --n-samples N           prompts sampled per side (default 128)
 --layer-index I         use an explicit direction index...
 --layer-fraction F      ...or a fractional depth (default 0.6)
---select {config,auto}  (run only) direction selection strategy
---no-embed/--no-attn/--no-mlp   skip orthogonalizing that site
+--select {config,auto,optimize}   (run only) selection strategy
+--no-embed/--no-attn/--no-mlp     skip orthogonalizing that site
 --dtype {float32,float16,bfloat16}
 ```
 
-Automatic layer selection sweeps a depth band and keeps the direction that most
-reduces refusal rate on held-out prompts:
+### Optimized abliteration
+
+The optimizer searches, per attention-out and MLP-down component, a per-layer
+strength *kernel* plus the direction (fixed index or per-layer), scoring each
+trial by generating on held-out harmful prompts (refusals) and measuring KL
+divergence on held-out harmless prompts. It writes the chosen parameters and
+before/after metrics to `abliteration_manifest.json`.
 
 ```bash
-abliterate run --model <model> --select auto -o output/auto
+abliterate optimize --model <model> \
+    --harmful harmful_behaviors --harmless harmless_alpaca \
+    --trials 100 --kl-weight 1.0 -o output/optimized
 ```
+
+Key `optimize` flags: `--trials`, `--n-startup`, `--kl-weight` (damage vs.
+refusal tradeoff), `--eval-harmful`, `--eval-harmless`, `--max-weight` (strength
+ceiling), `--optimize-embed`. Without `optuna` installed it falls back to a
+seeded random search over the same space.
+
+`run --select auto` is a lighter middle ground: it sweeps a depth band and keeps
+the single full-strength direction that most reduces refusals (no KL term).
 
 ## Prompt data
 
@@ -138,19 +174,34 @@ bundle.model.save_pretrained("output/abliterated")
 bundle.tokenizer.save_pretrained("output/abliterated")
 ```
 
+Automated, KL-aware optimization:
+
+```python
+from abliterate import optimize_ablation, apply_weighted_ablation
+from abliterate.config import OptimizeConfig
+
+best_params, history = optimize_ablation(
+    bundle, dirs, OptimizeConfig(n_trials=100),
+    harmful_eval, harmless_eval, model_cfg=bundle_cfg,
+)
+apply_weighted_ablation(bundle.model, dirs.directions, best_params,
+                        hidden_size=bundle.hidden_size)
+```
+
 ## Configuration
 
 See `configs/example.yaml` for the full, commented schema. Sections: `model`
 (source, dtype, optional architecture overrides), `data` (prompt sources and
-sampling), `ablation` (activation position, batch size, direction selection, and
-which residual-writing sites to touch), and `output_dir`.
+sampling), `ablation` (activation position, batch size, single-direction
+selection, and which residual-writing sites to touch), `optimize` (trials, eval
+sizes, `kl_weight`, search bounds), and `output_dir`.
 
 ## Output
 
-`abliterate run` / `apply` write a standard HuggingFace model directory
-(`config.json`, `model.safetensors`, tokenizer files) plus
-`abliteration_manifest.json` recording the source model, the direction index,
-how many matrices were modified, and the ablation settings.
+Commands write a standard HuggingFace model directory (`config.json`,
+`model.safetensors`, tokenizer files) plus `abliteration_manifest.json`. For
+`optimize`, the manifest records the searched parameters (direction, per-layer
+attention/MLP kernels) and the before/after refusal rate and KL divergence.
 
 ## Development
 
@@ -159,19 +210,35 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-Tests are CPU-only and download nothing: projection math is checked against
-explicit orthogonality invariants, and architecture discovery + end-to-end
-orthogonalization run on a tiny in-memory model.
+Tests are CPU-only and download nothing: projection math and partial-strength
+ablation are checked against explicit invariants, the weight kernel, KL metric,
+and optimizer search space are unit-tested, and architecture discovery +
+end-to-end (weighted) orthogonalization run on a tiny in-memory model.
 
 ## Notes & caveats
 
 - **Refusal-rate metric** uses substring matching against canonical refusal
-  openers — a directional signal, not ground truth.
+  markers — a directional signal, not ground truth. Override the list with
+  `abliterate.evaluate.set_refusal_markers(...)` for non-English models.
+- **KL divergence** is measured on the next-token distribution at the end of
+  harmless prompts (a fast, memory-light damage proxy), not over full responses.
 - **Quantized weights** are not supported; load in fp16/bf16/fp32.
 - **`output_hidden_states` under hooks**: on transformers ≥ 5 the intermediate
   `hidden_states` snapshots reflect pre-ablation values (the library captures
   them with its own prepended hooks); the forward computation and generation are
   still ablated. Read `last_hidden_state` or generate to observe the effect.
-- **Architecture didn't match?** If `run`/`apply` reports only one matrix
-  modified, the residual-write projections weren't found — set
-  `attn_out_names` / `mlp_out_names` in the model config.
+- **Architecture didn't match?** If a command reports only one matrix modified,
+  the residual-write projections weren't found — set `attn_out_names` /
+  `mlp_out_names` in the model config.
+
+## Method & references
+
+- Arditi et al., *Refusal in Language Models Is Mediated by a Single Direction*,
+  NeurIPS 2024 — the difference-of-means direction and weight orthogonalization.
+- P. E. Weidmann, *Heretic: Fully Automatic Censorship Removal for Language
+  Models via Optimized Abliteration*, 2025 — TPE optimization co-minimizing
+  refusals and KL divergence, per-component ablation weight kernels.
+- M. Labonne, *Uncensor any LLM with abliteration* — practical abliteration and
+  the `harmful_behaviors` / `harmless_alpaca` contrastive sets.
+
+Independent implementation; not affiliated with the above.

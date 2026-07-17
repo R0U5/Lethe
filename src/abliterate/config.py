@@ -68,10 +68,28 @@ class AblationConfig:
 
 
 @dataclass
+class OptimizeConfig:
+    """Automated abliteration search (TPE/Optuna, co-minimizing refusals + KL)."""
+
+    n_trials: int = 100
+    n_startup_trials: int = 30       # random exploration before TPE kicks in
+    n_eval_harmful: int = 32         # held-out prompts scored for refusals
+    n_eval_harmless: int = 32        # held-out prompts scored for KL divergence
+    max_new_tokens: int = 32         # generation length during refusal scoring
+    kl_weight: float = 1.0           # cost = refusal_rate + kl_weight * KL
+    seed: int = 0
+    # Search-space bounds.
+    max_weight_hi: float = 1.5       # upper bound on per-component ablation strength
+    dir_band: tuple[float, float] = (0.3, 0.95)  # fractional-depth band for fixed index
+    optimize_embed: bool = False     # also search an embedding ablation strength
+
+
+@dataclass
 class Config:
     model: ModelConfig
     data: DataConfig = field(default_factory=DataConfig)
     ablation: AblationConfig = field(default_factory=AblationConfig)
+    optimize: OptimizeConfig = field(default_factory=OptimizeConfig)
     output_dir: str = "output"
 
     @staticmethod
@@ -89,10 +107,12 @@ class Config:
         model = _build(ModelConfig, model_raw)
         data = _build(DataConfig, raw.get("data", {}))
         ablation = _build(AblationConfig, raw.get("ablation", {}))
+        optimize = _build(OptimizeConfig, raw.get("optimize", {}))
         return Config(
             model=model,
             data=data,
             ablation=ablation,
+            optimize=optimize,
             output_dir=raw.get("output_dir", "output"),
         )
 

@@ -17,13 +17,19 @@ from typing import Optional
 
 import torch
 
-from .ablation import orthogonalize_model
+from .ablation import (
+    AblationParams,
+    apply_weighted_ablation,
+    orthogonalize_model,
+)
 from .activations import collect_mean_activations
 from .config import Config
 from .data import load_prompts, sample_prompts
 from .directions import RefusalDirections, compute_refusal_directions
 from .evaluate import evaluate_refusal
+from .metrics import kl_divergence, next_token_logprobs
 from .model_utils import ModelBundle, load_model_and_tokenizer
+from .optimize import optimize_ablation
 
 logger = logging.getLogger("abliterate")
 
@@ -146,8 +152,79 @@ def apply_and_save(
     return out
 
 
+def _sampled(source, default_file, n, seed):
+    return sample_prompts(load_prompts(source, default_file=default_file), n, seed)
+
+
+def optimize_and_apply(cfg: Config, bundle: Optional[ModelBundle] = None) -> Path:
+    """Optimized abliteration: search params (refusals + KL), apply best, save.
+
+    Direction-computation and evaluation prompts are sampled with different seeds
+    so the search is scored on held-out prompts.
+    """
+    if bundle is None:
+        bundle = load_model_and_tokenizer(cfg.model)
+
+    ocfg = cfg.optimize
+    harmful_dir = _sampled(cfg.data.harmful, "harmful.txt", cfg.data.n_samples, cfg.data.seed)
+    harmless_dir = _sampled(cfg.data.harmless, "harmless.txt", cfg.data.n_samples, cfg.data.seed)
+    harmful_eval = _sampled(cfg.data.harmful, "harmful.txt", ocfg.n_eval_harmful, cfg.data.seed + 1)
+    harmless_eval = _sampled(cfg.data.harmless, "harmless.txt", ocfg.n_eval_harmless, cfg.data.seed + 1)
+
+    bundle, directions = build_directions(cfg, bundle=bundle, prompts=(harmful_dir, harmless_dir))
+
+    # Baseline refusal rate for the manifest.
+    before = evaluate_refusal(bundle, harmful_eval, max_new_tokens=ocfg.max_new_tokens)
+    logger.info("refusal rate before optimization: %.1f%%", 100 * before["refusal_rate"])
+
+    best_params, history = optimize_ablation(
+        bundle, directions, ocfg, harmful_eval, harmless_eval, model_cfg=cfg.model,
+    )
+    best_result = min(history, key=lambda r: r.cost)
+
+    modified = apply_weighted_ablation(
+        bundle.model, directions.directions, best_params,
+        model_cfg=cfg.model, hidden_size=bundle.hidden_size,
+    )
+
+    out = Path(cfg.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    logger.info("saving optimized abliterated model to %s", out)
+    bundle.model.save_pretrained(out)
+    bundle.tokenizer.save_pretrained(out)
+
+    manifest = {
+        "source_model": cfg.model.path,
+        "lora_adapter": cfg.model.lora_adapter,
+        "method": "optimized-abliteration",
+        "hidden_size": bundle.hidden_size,
+        "num_layers": bundle.num_layers,
+        "matrices_modified": modified,
+        "best_params": best_params.to_dict(),
+        "metrics": {
+            "refusal_rate_before": round(before["refusal_rate"], 4),
+            "refusal_rate_after": round(best_result.refusal_rate, 4),
+            "kl_divergence": round(best_result.kl, 4),
+            "cost": round(best_result.cost, 4),
+            "n_trials": len(history),
+        },
+        "optimize": {
+            "n_trials": ocfg.n_trials, "kl_weight": ocfg.kl_weight,
+            "n_eval_harmful": ocfg.n_eval_harmful, "n_eval_harmless": ocfg.n_eval_harmless,
+        },
+    }
+    (out / "abliteration_manifest.json").write_text(json.dumps(manifest, indent=2))
+    return out
+
+
 def run(cfg: Config, *, select: str = "config", evaluate: bool = True) -> Path:
-    """Full pipeline: directions -> select -> apply -> save (+ optional eval)."""
+    """Full pipeline: directions -> select -> apply -> save (+ optional eval).
+
+    ``select="optimize"`` runs the automated search instead (Heretic-style).
+    """
+    if select == "optimize":
+        return optimize_and_apply(cfg)
+
     harmful, harmless = load_contrastive_prompts(cfg)
     bundle, directions = build_directions(cfg, prompts=(harmful, harmless))
 

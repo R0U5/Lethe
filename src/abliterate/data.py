@@ -20,6 +20,9 @@ logger = logging.getLogger("abliterate")
 _KNOWN = {
     "advbench": ("walledai/AdvBench", "train", "prompt", None),
     "alpaca": ("tatsu-lab/alpaca", "train", "instruction", None),
+    # The contrastive pair popularized by mlabonne / used by Heretic.
+    "harmful_behaviors": ("mlabonne/harmful_behaviors", "train", "text", None),
+    "harmless_alpaca": ("mlabonne/harmless_alpaca", "train", "text", None),
 }
 
 
@@ -96,6 +99,17 @@ def _load_known_dataset(key: str) -> list[str]:
     repo, split, column, config_name = _KNOWN[key]
     logger.info("loading %s from %s[%s]", key, repo, split)
     ds = load_dataset(repo, config_name, split=split) if config_name else load_dataset(repo, split=split)
+
+    # Column names vary between mirrors; fall back to the first text-like column.
+    if column not in ds.column_names:
+        candidates = [c for c in ("text", "prompt", "instruction", "goal", "behavior")
+                      if c in ds.column_names]
+        if not candidates:
+            raise ValueError(
+                f"dataset {key!r} has columns {ds.column_names}; none look like prompts"
+            )
+        column = candidates[0]
+
     prompts = [str(row[column]) for row in ds if row.get(column)]
     if not prompts:
         raise ValueError(f"no prompts extracted from dataset {key!r}")

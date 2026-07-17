@@ -23,7 +23,9 @@ dependencies = [
 
 [project.optional-dependencies]
 datasets = ["datasets>=2.19"]
-dev = ["pytest>=8.0"]
+optimize = ["optuna>=3.6"]
+dev = ["pytest>=8.0", "optuna>=3.6"]
+all = ["datasets>=2.19", "optuna>=3.6"]
 
 [project.scripts]
 abliterate = "abliterate.cli:main"

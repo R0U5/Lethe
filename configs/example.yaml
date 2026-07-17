@@ -39,4 +39,20 @@ ablation:
   ablate_attn: true
   ablate_mlp: true
 
+# Automated abliteration (used by `abliterate optimize` or `run --select optimize`).
+# Searches ablation parameters to co-minimize refusals and KL divergence from the
+# original model. Needs the `optimize` extra (optuna) for TPE; otherwise falls
+# back to random search over the same space.
+optimize:
+  n_trials: 100
+  n_startup_trials: 30      # random exploration before TPE guidance
+  n_eval_harmful: 32        # held-out prompts scored for refusals
+  n_eval_harmless: 32       # held-out prompts scored for KL divergence
+  max_new_tokens: 32
+  kl_weight: 1.0            # cost = refusal_rate + kl_weight * KL
+  max_weight_hi: 1.5        # upper bound on per-component ablation strength
+  dir_band: [0.3, 0.95]     # fractional-depth band for a fixed direction index
+  optimize_embed: false
+  seed: 0
+
 output_dir: output/abliterated-model

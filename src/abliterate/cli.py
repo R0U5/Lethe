@@ -49,6 +49,18 @@ def _add_ablation_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-mlp", dest="ablate_mlp", action="store_false", default=None)
 
 
+def _add_optimize_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--trials", type=int, default=None, help="number of optimization trials")
+    p.add_argument("--n-startup", type=int, default=None, help="random trials before TPE")
+    p.add_argument("--kl-weight", type=float, default=None, help="KL weight in the cost function")
+    p.add_argument("--eval-harmful", type=int, default=None, help="held-out harmful prompts for refusal scoring")
+    p.add_argument("--eval-harmless", type=int, default=None, help="held-out harmless prompts for KL")
+    p.add_argument("--opt-max-new-tokens", type=int, default=None, help="generation length during search")
+    p.add_argument("--max-weight", type=float, default=None, help="upper bound on ablation strength")
+    p.add_argument("--optimize-embed", action="store_true", default=None, help="also search embedding ablation")
+    p.add_argument("--opt-seed", type=int, default=None, help="optimizer seed")
+
+
 def build_config(args: argparse.Namespace) -> Config:
     """Merge YAML (if any) with CLI flags; flags win when set."""
     if getattr(args, "config", None):
@@ -97,6 +109,26 @@ def build_config(args: argparse.Namespace) -> Config:
         val = getattr(args, flag, None)
         if val is not None:
             setattr(a, flag, val)
+    # Optimize overrides
+    o = cfg.optimize
+    if getattr(args, "trials", None) is not None:
+        o.n_trials = args.trials
+    if getattr(args, "n_startup", None) is not None:
+        o.n_startup_trials = args.n_startup
+    if getattr(args, "kl_weight", None) is not None:
+        o.kl_weight = args.kl_weight
+    if getattr(args, "eval_harmful", None) is not None:
+        o.n_eval_harmful = args.eval_harmful
+    if getattr(args, "eval_harmless", None) is not None:
+        o.n_eval_harmless = args.eval_harmless
+    if getattr(args, "opt_max_new_tokens", None) is not None:
+        o.max_new_tokens = args.opt_max_new_tokens
+    if getattr(args, "max_weight", None) is not None:
+        o.max_weight_hi = args.max_weight
+    if getattr(args, "optimize_embed", None):
+        o.optimize_embed = True
+    if getattr(args, "opt_seed", None) is not None:
+        o.seed = args.opt_seed
     # Output
     if getattr(args, "output", None):
         cfg.output_dir = args.output
@@ -144,6 +176,16 @@ def cmd_run(args) -> int:
     cfg = build_config(args)
     out = run(cfg, select=args.select, evaluate=not args.no_eval)
     print(f"done -> {out}")
+    return 0
+
+
+def cmd_optimize(args) -> int:
+    from .pipeline import optimize_and_apply
+
+    cfg = build_config(args)
+    out = optimize_and_apply(cfg)
+    print(f"optimized abliterated model saved -> {out}")
+    print(f"see {out}/abliteration_manifest.json for chosen params and metrics")
     return 0
 
 
@@ -195,10 +237,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="full pipeline: directions -> select -> apply -> save")
     _add_model_args(p_run); _add_data_args(p_run); _add_ablation_args(p_run)
     p_run.add_argument("-o", "--output", help="output model dir (default output/)")
-    p_run.add_argument("--select", choices=["config", "auto"], default="config",
-                       help="direction selection strategy")
+    p_run.add_argument("--select", choices=["config", "auto", "optimize"], default="config",
+                       help="direction selection strategy ('optimize' = automated search)")
     p_run.add_argument("--no-eval", action="store_true", help="skip before/after refusal eval")
+    _add_optimize_args(p_run)
     p_run.set_defaults(func=cmd_run)
+
+    p_opt = sub.add_parser("optimize", help="automated abliteration: co-minimize refusals + KL")
+    _add_model_args(p_opt); _add_data_args(p_opt); _add_ablation_args(p_opt)
+    _add_optimize_args(p_opt)
+    p_opt.add_argument("-o", "--output", help="output model dir (default output/)")
+    p_opt.set_defaults(func=cmd_optimize)
 
     p_eval = sub.add_parser("evaluate", help="measure refusal rate (optionally ablated)")
     _add_model_args(p_eval); _add_data_args(p_eval); _add_ablation_args(p_eval)
