@@ -1,4 +1,4 @@
-## Named after the River Lethe, where all memory was lost
+*The River Lethe, where all memory was lost*
 
 # abliterate
 
