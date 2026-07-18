@@ -13,6 +13,11 @@ model:
   device_map: auto
   trust_remote_code: false
 
+  # Quantized loading for large models (bitsandbytes, CUDA only). Quantized
+  # weights can't be edited in place, so save a runtime bundle (`--save bundle`).
+  # load_in_4bit: false
+  # load_in_8bit: false
+
   # Only needed for architectures whose residual-writing modules are not in the
   # built-in registry. Leave unset for llama/qwen/mistral/gemma/phi/gpt-neox/gpt2.
   # attn_out_names: ["o_proj"]

@@ -29,6 +29,10 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dtype", default=None, choices=["float32", "float16", "bfloat16"])
     p.add_argument("--device-map", default=None, help="device_map for loading (default: auto)")
     p.add_argument("--trust-remote-code", action="store_true", default=None)
+    p.add_argument("--load-in-4bit", action="store_true", default=None,
+                   help="load quantized in 4-bit (bitsandbytes, CUDA) -> save a bundle")
+    p.add_argument("--load-in-8bit", action="store_true", default=None,
+                   help="load quantized in 8-bit (bitsandbytes, CUDA) -> save a bundle")
 
 
 def _add_data_args(p: argparse.ArgumentParser) -> None:
@@ -85,6 +89,10 @@ def build_config(args: argparse.Namespace) -> Config:
         m.device_map = None if dm.lower() in ("", "none") else dm
     if getattr(args, "trust_remote_code", None):
         m.trust_remote_code = True
+    if getattr(args, "load_in_4bit", None):
+        m.load_in_4bit = True
+    if getattr(args, "load_in_8bit", None):
+        m.load_in_8bit = True
     # Data overrides
     if getattr(args, "harmful", None):
         d.harmful = args.harmful
@@ -174,7 +182,8 @@ def cmd_run(args) -> int:
     from .pipeline import run
 
     cfg = build_config(args)
-    out = run(cfg, select=args.select, evaluate=not args.no_eval)
+    out = run(cfg, select=args.select, evaluate=not args.no_eval,
+              save=getattr(args, "save", "model"))
     print(f"done -> {out}")
     return 0
 
@@ -183,9 +192,26 @@ def cmd_optimize(args) -> int:
     from .pipeline import optimize_and_apply
 
     cfg = build_config(args)
-    out = optimize_and_apply(cfg)
-    print(f"optimized abliterated model saved -> {out}")
-    print(f"see {out}/abliteration_manifest.json for chosen params and metrics")
+    out = optimize_and_apply(cfg, save=args.save)
+    kind = "bundle" if args.save == "bundle" else "model"
+    print(f"optimized abliteration ({kind}) saved -> {out}")
+    return 0
+
+
+def cmd_apply_bundle(args) -> int:
+    """Bake a saved bundle into a full-precision model and save it."""
+    from .bundle import AblationBundle
+    from .model_utils import load_model_and_tokenizer
+
+    cfg = build_config(args)
+    bundle = load_model_and_tokenizer(cfg.model)
+    abl = AblationBundle.load(args.bundle)
+    modified = abl.apply_permanently(bundle.model, model_cfg=cfg.model)
+    out = Path(cfg.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    bundle.model.save_pretrained(out)
+    bundle.tokenizer.save_pretrained(out)
+    print(f"baked bundle into {modified} matrices; saved model -> {out}")
     return 0
 
 
@@ -209,15 +235,27 @@ def cmd_evaluate(args) -> int:
         min(cfg.data.n_samples, 32), cfg.data.seed,
     )
 
-    direction = None
-    if args.directions:
-        directions = RefusalDirections.load(args.directions)
-        direction = directions.get(directions.select_index(cfg.ablation))
+    # A saved bundle applies its weighted ablation via hooks (works on quantized
+    # models too); a directions file applies a single full-strength direction.
+    if getattr(args, "bundle", None):
+        from .bundle import AblationBundle
+        from .evaluate import generate_completions, refusal_rate
 
-    result = evaluate_refusal(
-        bundle, prompts, direction=direction,
-        model_cfg=cfg.model, max_new_tokens=args.max_new_tokens,
-    )
+        abl = AblationBundle.load(args.bundle)
+        with abl.hooks(bundle.model, model_cfg=cfg.model):
+            completions = generate_completions(
+                bundle, prompts, max_new_tokens=args.max_new_tokens
+            )
+        result = {"refusal_rate": refusal_rate(completions), "n": len(completions)}
+    else:
+        direction = None
+        if args.directions:
+            directions = RefusalDirections.load(args.directions)
+            direction = directions.get(directions.select_index(cfg.ablation))
+        result = evaluate_refusal(
+            bundle, prompts, direction=direction,
+            model_cfg=cfg.model, max_new_tokens=args.max_new_tokens,
+        )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -247,14 +285,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--select", choices=["config", "auto", "optimize"], default="config",
                        help="direction selection strategy ('optimize' = automated search)")
     p_run.add_argument("--no-eval", action="store_true", help="skip before/after refusal eval")
+    p_run.add_argument("--save", choices=["model", "bundle", "both"], default="model",
+                       help="save a full model, a tiny runtime bundle, or both")
     _add_optimize_args(p_run)
     p_run.set_defaults(func=cmd_run)
 
     p_opt = sub.add_parser("optimize", help="automated abliteration: co-minimize refusals + KL")
     _add_model_args(p_opt); _add_data_args(p_opt); _add_ablation_args(p_opt)
     _add_optimize_args(p_opt)
-    p_opt.add_argument("-o", "--output", help="output model dir (default output/)")
+    p_opt.add_argument("-o", "--output", help="output model/bundle dir (default output/)")
+    p_opt.add_argument("--save", choices=["model", "bundle", "both"], default="model",
+                       help="save a full model, a tiny runtime bundle, or both "
+                            "(quantized models force 'bundle')")
     p_opt.set_defaults(func=cmd_optimize)
+
+    p_ab = sub.add_parser("apply-bundle", help="bake a saved bundle into a full-precision model")
+    _add_model_args(p_ab)
+    p_ab.add_argument("--bundle", required=True, help="bundle directory to apply")
+    p_ab.add_argument("-o", "--output", help="output model dir (default output/)")
+    p_ab.set_defaults(func=cmd_apply_bundle)
 
     p_ui = sub.add_parser("ui", help="launch the friendly local web UI")
     p_ui.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
@@ -265,6 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval = sub.add_parser("evaluate", help="measure refusal rate (optionally ablated)")
     _add_model_args(p_eval); _add_data_args(p_eval); _add_ablation_args(p_eval)
     p_eval.add_argument("--directions", help="apply this directions file via hooks")
+    p_eval.add_argument("--bundle", help="apply this abliteration bundle via hooks")
     p_eval.add_argument("--max-new-tokens", type=int, default=64)
     p_eval.set_defaults(func=cmd_evaluate)
 

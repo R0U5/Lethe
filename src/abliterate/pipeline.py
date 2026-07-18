@@ -23,12 +23,13 @@ from .ablation import (
     orthogonalize_model,
 )
 from .activations import collect_mean_activations
+from .bundle import build_bundle
 from .config import Config
 from .data import load_prompts, sample_prompts
 from .directions import RefusalDirections, compute_refusal_directions
 from .evaluate import evaluate_refusal
 from .metrics import kl_divergence, next_token_logprobs
-from .model_utils import ModelBundle, load_model_and_tokenizer
+from .model_utils import ModelBundle, is_quantized, load_model_and_tokenizer
 from .optimize import optimize_ablation
 
 logger = logging.getLogger("abliterate")
@@ -161,15 +162,31 @@ def optimize_and_apply(
     bundle: Optional[ModelBundle] = None,
     *,
     on_trial=None,
+    save: str = "model",
 ) -> Path:
     """Optimized abliteration: search params (refusals + KL), apply best, save.
 
     Direction-computation and evaluation prompts are sampled with different seeds
     so the search is scored on held-out prompts. ``on_trial(done, total)`` is
     forwarded to the optimizer for progress reporting.
+
+    ``save`` selects the output:
+      * ``"model"``   -- bake into weights, save a standalone HF model (default);
+      * ``"bundle"``  -- save only the tiny runtime bundle (required for
+        quantized models, which cannot be edited in place);
+      * ``"both"``    -- save the model and a bundle beside it.
+
+    In every case the in-memory model ends up behaving abliterated (via baked
+    weights or attached hooks), so callers can generate from it afterwards.
+    Returns the primary output path.
     """
     if bundle is None:
         bundle = load_model_and_tokenizer(cfg.model)
+
+    quantized = is_quantized(bundle.model)
+    if quantized and save != "bundle":
+        logger.info("model is quantized; forcing save=bundle (weights can't be edited)")
+        save = "bundle"
 
     ocfg = cfg.optimize
     harmful_dir = _sampled(cfg.data.harmful, "harmful.txt", cfg.data.n_samples, cfg.data.seed)
@@ -179,7 +196,6 @@ def optimize_and_apply(
 
     bundle, directions = build_directions(cfg, bundle=bundle, prompts=(harmful_dir, harmless_dir))
 
-    # Baseline refusal rate for the manifest.
     before = evaluate_refusal(bundle, harmful_eval, max_new_tokens=ocfg.max_new_tokens)
     logger.info("refusal rate before optimization: %.1f%%", 100 * before["refusal_rate"])
 
@@ -189,48 +205,61 @@ def optimize_and_apply(
     )
     best_result = min(history, key=lambda r: r.cost)
 
-    modified = apply_weighted_ablation(
-        bundle.model, directions.directions, best_params,
-        model_cfg=cfg.model, hidden_size=bundle.hidden_size,
+    metrics = {
+        "refusal_rate_before": round(before["refusal_rate"], 4),
+        "refusal_rate_after": round(best_result.refusal_rate, 4),
+        "kl_divergence": round(best_result.kl, 4),
+        "cost": round(best_result.cost, 4),
+        "n_trials": len(history),
+    }
+    abl_bundle = build_bundle(
+        directions.directions, best_params,
+        hidden_size=bundle.hidden_size, num_layers=bundle.num_layers,
+        source_model=cfg.model.path, metrics=metrics, model_cfg=cfg.model,
     )
 
     out = Path(cfg.output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    logger.info("saving optimized abliterated model to %s", out)
-    bundle.model.save_pretrained(out)
-    bundle.tokenizer.save_pretrained(out)
+    if save in ("model", "both"):
+        modified = apply_weighted_ablation(
+            bundle.model, directions.directions, best_params,
+            model_cfg=cfg.model, hidden_size=bundle.hidden_size,
+        )
+        out.mkdir(parents=True, exist_ok=True)
+        logger.info("saving optimized abliterated model to %s", out)
+        bundle.model.save_pretrained(out)
+        bundle.tokenizer.save_pretrained(out)
+        manifest = {
+            "source_model": cfg.model.path,
+            "lora_adapter": cfg.model.lora_adapter,
+            "method": "optimized-abliteration",
+            "hidden_size": bundle.hidden_size,
+            "num_layers": bundle.num_layers,
+            "matrices_modified": modified,
+            "best_params": best_params.to_dict(),
+            "metrics": metrics,
+            "optimize": {"n_trials": ocfg.n_trials, "kl_weight": ocfg.kl_weight},
+        }
+        (out / "abliteration_manifest.json").write_text(json.dumps(manifest, indent=2))
+        primary = out
+        if save == "both":
+            abl_bundle.save(out / "abliteration_bundle")
+    else:  # bundle only
+        abl_bundle.save(out)
+        # Make the in-memory model behave abliterated (hooks, since weights stay put).
+        abl_bundle.attach(bundle.model, model_cfg=cfg.model)
+        primary = out
 
-    manifest = {
-        "source_model": cfg.model.path,
-        "lora_adapter": cfg.model.lora_adapter,
-        "method": "optimized-abliteration",
-        "hidden_size": bundle.hidden_size,
-        "num_layers": bundle.num_layers,
-        "matrices_modified": modified,
-        "best_params": best_params.to_dict(),
-        "metrics": {
-            "refusal_rate_before": round(before["refusal_rate"], 4),
-            "refusal_rate_after": round(best_result.refusal_rate, 4),
-            "kl_divergence": round(best_result.kl, 4),
-            "cost": round(best_result.cost, 4),
-            "n_trials": len(history),
-        },
-        "optimize": {
-            "n_trials": ocfg.n_trials, "kl_weight": ocfg.kl_weight,
-            "n_eval_harmful": ocfg.n_eval_harmful, "n_eval_harmless": ocfg.n_eval_harmless,
-        },
-    }
-    (out / "abliteration_manifest.json").write_text(json.dumps(manifest, indent=2))
-    return out
+    return primary
 
 
-def run(cfg: Config, *, select: str = "config", evaluate: bool = True) -> Path:
+def run(cfg: Config, *, select: str = "config", evaluate: bool = True,
+        save: str = "model") -> Path:
     """Full pipeline: directions -> select -> apply -> save (+ optional eval).
 
     ``select="optimize"`` runs the automated search instead (Heretic-style).
     """
     if select == "optimize":
-        return optimize_and_apply(cfg)
+        return optimize_and_apply(cfg, save=save)
 
     harmful, harmless = load_contrastive_prompts(cfg)
     bundle, directions = build_directions(cfg, prompts=(harmful, harmless))

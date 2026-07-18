@@ -34,6 +34,14 @@ class ModelConfig:
     trust_remote_code: bool = False
     tokenizer_path: Optional[str] = None  # defaults to `path`
 
+    # Quantized loading (bitsandbytes; CUDA only). Lets large models fit in VRAM
+    # to find the direction / run the optimizer. Quantized weights cannot be
+    # orthogonalized in place -- apply the result as a runtime bundle instead.
+    load_in_4bit: bool = False
+    load_in_8bit: bool = False
+    bnb_4bit_quant_type: str = "nf4"        # nf4 | fp4
+    bnb_4bit_compute_dtype: str = "bfloat16"
+
     # Optional overrides for architectures whose module names are not in the
     # built-in registry. See model_utils.ModulePatterns.
     attn_out_names: Optional[list[str]] = None

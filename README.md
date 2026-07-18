@@ -61,12 +61,15 @@ stack. Exotic architectures can be pinned via config (`attn_out_names`,
 pip install -e .
 # recommended: TPE optimizer (optuna) for `optimize` mode
 pip install -e ".[optimize]"
-# everything (optimizer + AdvBench/Alpaca/mlabonne dataset loaders)
+# quantized (4/8-bit) loading of large models — CUDA only
+pip install -e ".[quantize]"
+# everything (optimizer + dataset loaders + bitsandbytes)
 pip install -e ".[all]"
 ```
 
-Requires a floating-point (not quantized) model, since abliteration edits raw
-weights.
+To bake a permanent standalone model you need a floating-point (fp16/bf16/fp32)
+model. Quantized models are supported too, but via a **runtime bundle** (see
+below) rather than an in-place weight edit.
 
 ## The easiest way: the web UI
 
@@ -82,6 +85,9 @@ live progress, before/after example answers, the refusal and KL numbers, and a
 box to chat with the resulting model — then it's saved to a folder ready to use.
 
 > paste model → pick thoroughness → click → watch progress → try the result
+
+Advanced settings in the UI let you choose the **output** (full model folder or
+a lightweight bundle) and a **Low VRAM (4-bit)** toggle for large models.
 
 Options: `abliterate ui --port 8000 --no-browser` (defaults: host `127.0.0.1`,
 port `7860`, opens a browser). It binds to localhost only.
@@ -115,7 +121,8 @@ abliterate run --config configs/example.yaml --select optimize   # optimized
 | `abliterate run` | Single-direction pipeline: compute directions, select (`config`/`auto`/`optimize`), apply, save, evaluate. |
 | `abliterate directions` | Compute and save per-layer candidate directions (`.pt`). |
 | `abliterate apply` | Orthogonalize weights (optionally from a saved directions file) and save the model. |
-| `abliterate evaluate` | Measure refusal rate, optionally applying a direction via hooks. |
+| `abliterate apply-bundle` | Bake a saved runtime bundle into a full-precision model and save it. |
+| `abliterate evaluate` | Measure refusal rate, optionally applying a direction or bundle via hooks. |
 
 Common flags (any config field can be overridden on the command line):
 
@@ -153,6 +160,51 @@ seeded random search over the same space.
 
 `run --select auto` is a lighter middle ground: it sweeps a depth band and keeps
 the single full-strength direction that most reduces refusals (no KL term).
+
+## Runtime bundles & quantized models
+
+A **bundle** is a tiny artifact (the refusal direction + the weighted-ablation
+parameters, a few KB) that reproduces an abliteration at inference time via
+forward hooks — the LoRA-adapter equivalent of an abliteration. It applies on
+top of the *original* weights, so:
+
+- it works on **quantized models** (4/8-bit bitsandbytes), whose packed weights
+  can't be orthogonalized in place;
+- it's reversible and small — ship it next to the base model instead of a full copy.
+
+```bash
+# Save a bundle instead of a full model
+abliterate optimize --model <model> --save bundle -o my-abliteration
+
+# Abliterate a large model loaded in 4-bit (fits on a smaller GPU) — forces a bundle
+abliterate optimize --model <big-model> --load-in-4bit -o my-abliteration
+
+# Try a bundle without applying it permanently
+abliterate evaluate --model <model> --bundle my-abliteration
+
+# Later, bake a bundle into a full-precision model for a standalone copy
+abliterate apply-bundle --model <model> --bundle my-abliteration -o final-model
+```
+
+Apply a bundle in Python (this is how you serve a quantized model as abliterated):
+
+```python
+from abliterate import load_abliterated
+
+model_bundle, _, hooks = load_abliterated(
+    "Qwen/Qwen2.5-1.5B-Instruct", "my-abliteration", load_in_4bit=True,
+)
+out = model_bundle.model.generate(...)   # generates as if abliterated
+hooks.remove()                           # restore the original behavior
+```
+
+The trade-off: a bundle applies through PyTorch/transformers hooks, so it's for
+serving via transformers (including bitsandbytes). To run in **llama.cpp /
+Ollama / LM Studio (GGUF)** or **vLLM**, bake a full-precision model first
+(`--save model` or `apply-bundle`) and quantize that with the target runtime's
+tooling.
+
+> Quantized (4/8-bit) loading needs a CUDA GPU and `pip install -e ".[quantize]"`.
 
 ## Prompt data
 
@@ -241,7 +293,8 @@ end-to-end (weighted) orthogonalization run on a tiny in-memory model.
   `abliterate.evaluate.set_refusal_markers(...)` for non-English models.
 - **KL divergence** is measured on the next-token distribution at the end of
   harmless prompts (a fast, memory-light damage proxy), not over full responses.
-- **Quantized weights** are not supported; load in fp16/bf16/fp32.
+- **Quantized weights** can't be orthogonalized in place — for a 4/8-bit model,
+  save a **runtime bundle** (applied via hooks) instead of a full model.
 - **`output_hidden_states` under hooks**: on transformers ≥ 5 the intermediate
   `hidden_states` snapshots reflect pre-ablation values (the library captures
   them with its own prepended hooks); the forward computation and generation are

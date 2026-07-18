@@ -30,6 +30,7 @@ from .config import AblationConfig, ModelConfig
 from .model_utils import (
     get_decoder_layers,
     get_embedding_module,
+    is_quantized,
     iter_residual_write_modules,
 )
 
@@ -39,6 +40,15 @@ logger = logging.getLogger("abliterate")
 # --------------------------------------------------------------------------- #
 # Core projection math
 # --------------------------------------------------------------------------- #
+def _reject_quantized(model: nn.Module) -> None:
+    if is_quantized(model):
+        raise ValueError(
+            "cannot orthogonalize a quantized model's packed weights. Save a "
+            "runtime bundle instead (AblationBundle / `--save bundle`) and apply "
+            "it with hooks at load time, or load in full precision to bake it in."
+        )
+
+
 def _hidden_axis_for(module: nn.Module) -> int:
     """Which weight axis is the hidden (residual) dimension for this module."""
     if isinstance(module, nn.Linear):
@@ -108,6 +118,7 @@ def orthogonalize_model(
     Returns the number of weight matrices modified. Which sites are touched
     (embedding / attention-out / MLP-down) is controlled by ``ablation_cfg``.
     """
+    _reject_quantized(model)
     ablation_cfg = ablation_cfg or AblationConfig()
     if hidden_size is None:
         hidden_size = get_embedding_module(model).weight.shape[-1]
@@ -230,6 +241,10 @@ class LayerWeightKernel:
         frac = min(abs(layer_index - self.max_weight_position) / self.min_weight_distance, 1.0)
         return self.max_weight + (self.min_weight - self.max_weight) * frac
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "LayerWeightKernel":
+        return cls(**{k: d[k] for k in vars(cls()) if k in d})
+
 
 @dataclass
 class AblationParams:
@@ -258,6 +273,17 @@ class AblationParams:
             "ablate_embed": self.ablate_embed,
             "embed_strength": self.embed_strength,
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AblationParams":
+        return cls(
+            direction_index=d.get("direction_index"),
+            per_layer_direction=bool(d.get("per_layer_direction", False)),
+            attn_kernel=LayerWeightKernel.from_dict(d.get("attn_kernel", {})),
+            mlp_kernel=LayerWeightKernel.from_dict(d.get("mlp_kernel", {})),
+            ablate_embed=bool(d.get("ablate_embed", False)),
+            embed_strength=float(d.get("embed_strength", 1.0)),
+        )
 
 
 def _direction_for_layer(
@@ -358,6 +384,7 @@ def apply_weighted_ablation(
     projection, using the fixed or per-layer direction. Returns the number of
     weight matrices modified.
     """
+    _reject_quantized(model)
     if hidden_size is None:
         hidden_size = get_embedding_module(model).weight.shape[-1]
 

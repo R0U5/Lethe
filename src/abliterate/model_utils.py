@@ -110,15 +110,24 @@ def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    logger.info("loading model from %s (dtype=%s)", cfg.path, cfg.dtype)
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.path,
-        device_map=cfg.device_map,
-        trust_remote_code=cfg.trust_remote_code,
-        **{_DTYPE_KWARG: dtype},
-    )
+    quant_config = _build_quantization_config(cfg)
+    logger.info("loading model from %s (dtype=%s%s)", cfg.path, cfg.dtype,
+                ", 4-bit" if cfg.load_in_4bit else (", 8-bit" if cfg.load_in_8bit else ""))
+    load_kwargs = {
+        "device_map": cfg.device_map,
+        "trust_remote_code": cfg.trust_remote_code,
+        _DTYPE_KWARG: dtype,
+    }
+    if quant_config is not None:
+        load_kwargs["quantization_config"] = quant_config
+    model = AutoModelForCausalLM.from_pretrained(cfg.path, **load_kwargs)
 
     if cfg.lora_adapter:
+        if quant_config is not None:
+            raise ValueError(
+                "cannot merge a LoRA adapter into a quantized model; load in "
+                "full precision to merge, or apply the adapter separately"
+            )
         model = _merge_lora(model, cfg.lora_adapter)
 
     model.eval()
@@ -134,6 +143,31 @@ def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
         hidden_size=hidden_size,
         num_layers=len(layers),
     )
+
+
+def _build_quantization_config(cfg: ModelConfig):
+    """Return a BitsAndBytesConfig for 4/8-bit loading, or None."""
+    if not (cfg.load_in_4bit or cfg.load_in_8bit):
+        return None
+    try:
+        from transformers import BitsAndBytesConfig
+    except ImportError as exc:  # pragma: no cover - dependency guard
+        raise ImportError("quantized loading needs transformers with bitsandbytes") from exc
+    if cfg.load_in_4bit:
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type=cfg.bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=resolve_dtype(cfg.bnb_4bit_compute_dtype),
+            bnb_4bit_use_double_quant=True,
+        )
+    return BitsAndBytesConfig(load_in_8bit=True)
+
+
+def is_quantized(model: nn.Module) -> bool:
+    """True if the model was loaded with bitsandbytes quantization."""
+    if getattr(getattr(model, "config", None), "quantization_config", None) is not None:
+        return True
+    return any(type(m).__name__ in ("Linear4bit", "Linear8bitLt") for m in model.modules())
 
 
 def _merge_lora(model: nn.Module, adapter_path: str) -> nn.Module:

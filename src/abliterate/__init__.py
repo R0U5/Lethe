@@ -24,6 +24,7 @@ from .ablation import (
     apply_weighted_ablation,
     orthogonalize_model,
 )
+from .bundle import AblationBundle, build_bundle, load_abliterated
 from .metrics import kl_divergence, next_token_logprobs
 from .optimize import optimize_ablation
 
@@ -46,6 +47,9 @@ __all__ = [
     "optimize_ablation",
     "kl_divergence",
     "next_token_logprobs",
+    "AblationBundle",
+    "build_bundle",
+    "load_abliterated",
 ]
 
 __version__ = "0.1.0"

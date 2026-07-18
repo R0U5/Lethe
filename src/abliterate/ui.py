@@ -121,6 +121,8 @@ def _run_job(job: Job, params: dict) -> None:
 
         model_path = (params.get("model") or "").strip()
         device_map = (params.get("device_map") or "auto").strip() or "auto"
+        load_in_4bit = bool(params.get("load_in_4bit", False))
+        save = "bundle" if params.get("output_format") == "bundle" else "model"
         cfg = Config(
             model=ModelConfig(
                 path=model_path,
@@ -128,6 +130,7 @@ def _run_job(job: Job, params: dict) -> None:
                 dtype=params.get("dtype", "bfloat16"),
                 device_map=None if device_map.lower() in ("", "none", "cpu") else device_map,
                 trust_remote_code=bool(params.get("trust_remote_code", False)),
+                load_in_4bit=load_in_4bit,
             ),
             data=DataConfig(n_samples=preset.pop("n_samples"), seed=0),
             optimize=OptimizeConfig(
@@ -159,8 +162,10 @@ def _run_job(job: Job, params: dict) -> None:
                     progress=0.15 + 0.72 * (done / max(total, 1)))
 
         job.set(phase="Searching for the best settings", progress=0.15)
-        out = optimize_and_apply(cfg, bundle=bundle, on_trial=on_trial)
+        out = optimize_and_apply(cfg, bundle=bundle, on_trial=on_trial, save=save)
 
+        # The in-memory model behaves abliterated either way (baked weights or
+        # attached hooks), so 'after' samples and the try-it box work.
         job.set(phase="Checking the abliterated model", progress=0.9)
         after = generate_completions(bundle, demo, max_new_tokens=48, batch_size=len(demo))
         job.set(after_samples=[
@@ -168,15 +173,14 @@ def _run_job(job: Job, params: dict) -> None:
             for p, c in zip(demo, after)
         ])
 
-        manifest = json.loads((Path(out) / "abliteration_manifest.json").read_text())
         job.set(
-            metrics=manifest.get("metrics", {}),
+            metrics=_read_metrics(out),
             result_dir=str(out),
             phase="Done",
             progress=1.0,
             state="done",
         )
-        job.add_log(f"Saved abliterated model to {out}")
+        job.add_log(f"Saved to {out}")
     except Exception as exc:  # surface a friendly error, keep the server alive
         logger.error("job failed: %s", exc)
         job.add_log(traceback.format_exc().strip().splitlines()[-1])
@@ -188,6 +192,16 @@ def _run_job(job: Job, params: dict) -> None:
 def _clip(text: str, n: int = 300) -> str:
     text = text.strip()
     return text if len(text) <= n else text[:n] + "…"
+
+
+def _read_metrics(out) -> dict:
+    """Metrics live in the model manifest or the bundle's json, depending on mode."""
+    out = Path(out)
+    for name in ("abliteration_manifest.json", "bundle.json"):
+        f = out / name
+        if f.exists():
+            return json.loads(f.read_text()).get("metrics", {})
+    return {}
 
 
 def _start_job(params: dict) -> tuple[bool, str]:
@@ -409,6 +423,20 @@ INDEX_HTML = r"""<!doctype html>
             </select>
           </div>
           <div>
+            <label>Output</label>
+            <select id="output_format">
+              <option value="model">Full model folder</option>
+              <option value="bundle">Lightweight bundle (tiny sidecar)</option>
+            </select>
+            <p class="hint">A bundle is a few KB applied on load — needed for 4-bit models.</p>
+          </div>
+          <div>
+            <label style="display:flex;align-items:center;gap:8px;font-weight:600">
+              <input id="lowvram" type="checkbox" style="width:auto"> Low VRAM (4-bit)
+            </label>
+            <p class="hint">Load big models quantized (GPU only). Saves a bundle.</p>
+          </div>
+          <div>
             <label>Protect abilities (KL weight)</label>
             <input id="kl" type="number" step="0.1" min="0" value="1.0">
             <p class="hint">Higher = keep the model's skills more intact.</p>
@@ -487,7 +515,10 @@ document.getElementById("go").onclick = async () => {
     kl_weight: document.getElementById("kl").value,
     trials: document.getElementById("trials").value,
     trust_remote_code: document.getElementById("trust").checked,
+    output_format: document.getElementById("output_format").value,
+    load_in_4bit: document.getElementById("lowvram").checked,
   };
+  if(body.load_in_4bit){ body.output_format = "bundle"; }
   if(!body.model.trim()){ showErr("Please enter a model name or path."); return; }
   const r = await fetch("/api/start", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
   const j = await r.json();
