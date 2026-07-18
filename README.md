@@ -1,7 +1,5 @@
 *The River Lethe, where all memory was lost*
 
-# abliterate
-
 Model-agnostic **abliteration** of refusal directions from transformer language
 models. Point it at any HuggingFace causal LM — a full model, or a base model
 with a LoRA/PEFT adapter merged on top (e.g. a **reforge** fine-tune) — and it
