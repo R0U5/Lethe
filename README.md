@@ -1,7 +1,6 @@
 *The River Lethe, where all memory was lost*
 
-Model-agnostic **abliteration** of refusal directions from transformer language
-models. Point it at any HuggingFace causal LM — a full model, or a base model
+Point it at any HuggingFace causal LM — a full model, or a base model
 with a LoRA/PEFT adapter merged on top (e.g. a **reforge** fine-tune) — and it
 computes the model's refusal direction and projects it out of the weights,
 producing a normal model you can save and serve anywhere.
