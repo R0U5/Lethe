@@ -189,6 +189,13 @@ def cmd_optimize(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    from .ui import launch
+
+    launch(host=args.host, port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def cmd_evaluate(args) -> int:
     from .directions import RefusalDirections
     from .data import load_prompts, sample_prompts
@@ -248,6 +255,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_optimize_args(p_opt)
     p_opt.add_argument("-o", "--output", help="output model dir (default output/)")
     p_opt.set_defaults(func=cmd_optimize)
+
+    p_ui = sub.add_parser("ui", help="launch the friendly local web UI")
+    p_ui.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    p_ui.add_argument("--port", type=int, default=7860, help="port (default 7860)")
+    p_ui.add_argument("--no-browser", action="store_true", help="don't open a browser")
+    p_ui.set_defaults(func=cmd_ui)
 
     p_eval = sub.add_parser("evaluate", help="measure refusal rate (optionally ablated)")
     _add_model_args(p_eval); _add_data_args(p_eval); _add_ablation_args(p_eval)

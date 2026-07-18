@@ -68,7 +68,25 @@ pip install -e ".[all]"
 Requires a floating-point (not quantized) model, since abliteration edits raw
 weights.
 
-## Quick start
+## The easiest way: the web UI
+
+No flags to learn. Launch the built-in local app (zero extra dependencies):
+
+```bash
+abliterate ui
+```
+
+It opens `http://127.0.0.1:7860` in your browser. Paste a model name or folder,
+pick **Quick / Balanced / Thorough**, and click **Remove refusals**. You'll see
+live progress, before/after example answers, the refusal and KL numbers, and a
+box to chat with the resulting model — then it's saved to a folder ready to use.
+
+> paste model → pick thoroughness → click → watch progress → try the result
+
+Options: `abliterate ui --port 8000 --no-browser` (defaults: host `127.0.0.1`,
+port `7860`, opens a browser). It binds to localhost only.
+
+## Quick start (CLI)
 
 ```bash
 # Recommended: automated, KL-aware abliteration
@@ -92,7 +110,8 @@ abliterate run --config configs/example.yaml --select optimize   # optimized
 
 | Command | What it does |
 |---|---|
-| `abliterate optimize` | **Automated, KL-aware abliteration** (recommended): search direction + per-component weight kernels to co-minimize refusals and KL, apply the best, save. |
+| `abliterate ui` | **Launch the friendly local web app** — the easiest way to use everything below. |
+| `abliterate optimize` | **Automated, KL-aware abliteration** (recommended CLI path): search direction + per-component weight kernels to co-minimize refusals and KL, apply the best, save. |
 | `abliterate run` | Single-direction pipeline: compute directions, select (`config`/`auto`/`optimize`), apply, save, evaluate. |
 | `abliterate directions` | Compute and save per-layer candidate directions (`.pt`). |
 | `abliterate apply` | Orthogonalize weights (optionally from a saved directions file) and save the model. |

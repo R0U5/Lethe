@@ -156,11 +156,17 @@ def _sampled(source, default_file, n, seed):
     return sample_prompts(load_prompts(source, default_file=default_file), n, seed)
 
 
-def optimize_and_apply(cfg: Config, bundle: Optional[ModelBundle] = None) -> Path:
+def optimize_and_apply(
+    cfg: Config,
+    bundle: Optional[ModelBundle] = None,
+    *,
+    on_trial=None,
+) -> Path:
     """Optimized abliteration: search params (refusals + KL), apply best, save.
 
     Direction-computation and evaluation prompts are sampled with different seeds
-    so the search is scored on held-out prompts.
+    so the search is scored on held-out prompts. ``on_trial(done, total)`` is
+    forwarded to the optimizer for progress reporting.
     """
     if bundle is None:
         bundle = load_model_and_tokenizer(cfg.model)
@@ -178,7 +184,8 @@ def optimize_and_apply(cfg: Config, bundle: Optional[ModelBundle] = None) -> Pat
     logger.info("refusal rate before optimization: %.1f%%", 100 * before["refusal_rate"])
 
     best_params, history = optimize_ablation(
-        bundle, directions, ocfg, harmful_eval, harmless_eval, model_cfg=cfg.model,
+        bundle, directions, ocfg, harmful_eval, harmless_eval,
+        model_cfg=cfg.model, on_trial=on_trial,
     )
     best_result = min(history, key=lambda r: r.cost)
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 import torch
 
@@ -108,8 +108,13 @@ def optimize_ablation(
     harmless_eval: list[str],
     *,
     model_cfg: Optional[ModelConfig] = None,
+    on_trial: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[AblationParams, list[TrialResult]]:
-    """Search for the best ablation params. Returns ``(best_params, history)``."""
+    """Search for the best ablation params. Returns ``(best_params, history)``.
+
+    ``on_trial(completed, total)`` is called after each evaluated trial (for UI
+    progress reporting).
+    """
     n_layers = bundle.num_layers
     n_candidates = directions.num_candidates
     dirs = directions.directions
@@ -140,9 +145,11 @@ def optimize_ablation(
         result = TrialResult(params=params, cost=cost, refusal_rate=rr, kl=kl)
         history.append(result)
         logger.info(
-            "trial %d: cost=%.4f (refusal=%.1f%%, KL=%.4f)",
-            len(history), cost, 100 * rr, kl,
+            "trial %d/%d: cost=%.4f (refusal=%.1f%%, KL=%.4f)",
+            len(history), cfg.n_trials, cost, 100 * rr, kl,
         )
+        if on_trial is not None:
+            on_trial(len(history), cfg.n_trials)
         return result
 
     best = _run_optuna(evaluate_params, n_layers, n_candidates, cfg)
