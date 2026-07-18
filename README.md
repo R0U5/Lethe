@@ -1,3 +1,5 @@
+## Named after the River Lethe, where all memory was lost
+
 # abliterate
 
 Model-agnostic **abliteration** of refusal directions from transformer language
