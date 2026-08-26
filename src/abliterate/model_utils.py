@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator, Optional
 
 import torch
@@ -91,6 +92,12 @@ def resolve_dtype(name: str) -> torch.dtype:
     return _DTYPES[key]
 
 
+def _is_local_path(path: str) -> bool:
+    """Check if a path refers to a local directory or file."""
+    p = Path(path)
+    return p.exists() or (p.parent / p.name).exists()
+
+
 def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
     """Load a causal LM (optionally merging a LoRA/PEFT adapter) + tokenizer.
 
@@ -101,8 +108,11 @@ def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
     tok_path = cfg.tokenizer_path or cfg.path
 
     logger.info("loading tokenizer from %s", tok_path)
+    use_local = _is_local_path(tok_path)
     tokenizer = AutoTokenizer.from_pretrained(
-        tok_path, trust_remote_code=cfg.trust_remote_code
+        tok_path,
+        trust_remote_code=cfg.trust_remote_code,
+        local_files_only=use_local,
     )
     # Left padding keeps the final real token at position -1 for every sequence,
     # which is where we read activations.
@@ -120,7 +130,10 @@ def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
     }
     if quant_config is not None:
         load_kwargs["quantization_config"] = quant_config
-    model = AutoModelForCausalLM.from_pretrained(cfg.path, **load_kwargs)
+    use_local = _is_local_path(cfg.path)
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg.path, **{**load_kwargs, "local_files_only": use_local}
+    )
 
     if cfg.lora_adapter:
         if quant_config is not None:
