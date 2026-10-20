@@ -30,6 +30,7 @@ from .directions import RefusalDirections
 from .evaluate import generate_completions, refusal_rate
 from .metrics import kl_divergence, next_token_logprobs
 from .model_utils import ModelBundle
+from .progress import ProgressCallback, emit
 
 logger = logging.getLogger("abliterate")
 
@@ -109,21 +110,26 @@ def optimize_ablation(
     *,
     model_cfg: Optional[ModelConfig] = None,
     on_trial: Optional[Callable[[int, int], None]] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> tuple[AblationParams, list[TrialResult]]:
     """Search for the best ablation params. Returns ``(best_params, history)``.
 
     ``on_trial(completed, total)`` is called after each evaluated trial (for UI
-    progress reporting).
+    progress reporting). ``on_progress(phase, fraction)`` reports the warm-up
+    work that happens before the first trial (the reference-distribution
+    capture), so the UI does not sit on a static percentage.
     """
     n_layers = bundle.num_layers
     n_candidates = directions.num_candidates
     dirs = directions.directions
 
     # Reference distribution from the ORIGINAL (un-ablated) model, captured once.
+    emit(on_progress, "Capturing reference distribution", 0.0)
     logger.info("capturing reference distribution on %d harmless prompts", len(harmless_eval))
     reference = next_token_logprobs(
         bundle, harmless_eval, batch_size=max(1, cfg.n_eval_harmless // 4)
     )
+    emit(on_progress, "Reference distribution captured", 1.0)
 
     history: list[TrialResult] = []
 
