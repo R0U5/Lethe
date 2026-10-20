@@ -74,6 +74,12 @@ below) rather than an in-place weight edit.
 
 No flags to learn. Launch the built-in local app (zero extra dependencies):
 
+### The web UI
+
+![Abliterate web UI](docs/ui-screenshot.png)
+
+
+
 ```bash
 abliterate ui
 ```
