@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import traceback
 import webbrowser
@@ -39,6 +40,21 @@ PRESETS = {
 }
 _MAX_LOG_LINES = 400
 
+# Global progress budget (fractions of the whole run) for each stage. The
+# per-stage callbacks report a fraction within their stage; these bands map it
+# onto the single bar the page shows.
+_LOAD_BAND = (0.02, 0.20)     # model + tokenizer load
+_BEFORE_BAND = (0.20, 0.26)   # 'before' demo completions
+_WARMUP_BAND = (0.26, 0.42)   # prompt prep, directions, baseline, reference
+_TRIALS_BAND = (0.42, 0.90)   # optimizer trials
+_AFTER_BAND = (0.90, 0.97)    # 'after' demo completions
+
+
+def _lerp(band: tuple[float, float], frac: float) -> float:
+    """Map a stage fraction in [0, 1] onto a global band."""
+    lo, hi = band
+    return lo + (hi - lo) * max(0.0, min(1.0, frac))
+
 
 # --------------------------------------------------------------------------- #
 # Job state
@@ -48,6 +64,7 @@ class Job:
     state: str = "idle"          # idle | running | done | error
     phase: str = ""
     progress: float = 0.0        # 0..1
+    indeterminate: bool = False  # True -> show a spinner, not a static bar
     log: list = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
     result_dir: Optional[str] = None
@@ -74,6 +91,7 @@ class Job:
                 "state": self.state,
                 "phase": self.phase,
                 "progress": round(self.progress, 4),
+                "indeterminate": self.indeterminate,
                 "log": self.log[-60:],
                 "metrics": self.metrics,
                 "result_dir": self.result_dir,
@@ -142,15 +160,41 @@ def _run_job(job: Job, params: dict) -> None:
             output_dir=(params.get("output_dir") or "output/abliterated-model").strip(),
         )
 
-        job.set(state="running", phase="Loading the model", progress=0.03)
+        def set_phase(text: str, progress: Optional[float] = None,
+                      indeterminate: bool = False) -> None:
+            """Update the visible phase; only touch progress when we have one."""
+            kw = {"phase": text, "indeterminate": indeterminate}
+            if progress is not None:
+                kw["progress"] = progress
+            job.set(**kw)
+
+        def on_load(text: str, frac: Optional[float]) -> None:
+            set_phase(text,
+                      None if frac is None else _lerp(_LOAD_BAND, frac),
+                      indeterminate=frac is None)
+
+        def on_warmup(text: str, frac: Optional[float]) -> None:
+            set_phase(text,
+                      None if frac is None else _lerp(_WARMUP_BAND, frac),
+                      indeterminate=frac is None)
+
+        job.set(state="running", phase="Loading the model", progress=_LOAD_BAND[0],
+                indeterminate=False)
         job.add_log(f"Loading {model_path} ...")
-        bundle = load_model_and_tokenizer(cfg.model)
+        bundle = load_model_and_tokenizer(cfg.model, on_progress=on_load)
         job.set(bundle=bundle)
 
         demo = sample_prompts(
             load_prompts(cfg.data.harmful, default_file="harmful.txt"), 3, seed=7
         )
-        job.set(phase="Checking how the original model responds", progress=0.09)
+        # A single generation call has no measurable progress; show the spinner
+        # so a multi-minute CPU-offloaded run reads as "working", not "hung".
+        set_phase(
+            "Checking how the original model responds "
+            "(this can take several minutes on a CPU-offloaded model)",
+            _BEFORE_BAND[0],
+            indeterminate=True,
+        )
         before = generate_completions(bundle, demo, max_new_tokens=48, batch_size=len(demo))
         job.set(before_samples=[
             {"prompt": p, "response": _clip(c), "refused": is_refusal(c)}
@@ -158,15 +202,17 @@ def _run_job(job: Job, params: dict) -> None:
         ])
 
         def on_trial(done: int, total: int) -> None:
-            job.set(phase=f"Searching for the best settings — trial {done} of {total}",
-                    progress=0.15 + 0.72 * (done / max(total, 1)))
+            set_phase(f"Searching for the best settings — trial {done} of {total}",
+                      _lerp(_TRIALS_BAND, done / max(total, 1)))
 
-        job.set(phase="Searching for the best settings", progress=0.15)
-        out = optimize_and_apply(cfg, bundle=bundle, on_trial=on_trial, save=save)
+        set_phase("Searching for the best settings", _TRIALS_BAND[0])
+        out = optimize_and_apply(
+            cfg, bundle=bundle, on_trial=on_trial, on_progress=on_warmup, save=save,
+        )
 
         # The in-memory model behaves abliterated either way (baked weights or
         # attached hooks), so 'after' samples and the try-it box work.
-        job.set(phase="Checking the abliterated model", progress=0.9)
+        set_phase("Checking the abliterated model", _AFTER_BAND[0], indeterminate=True)
         after = generate_completions(bundle, demo, max_new_tokens=48, batch_size=len(demo))
         job.set(after_samples=[
             {"prompt": p, "response": _clip(c), "refused": is_refusal(c)}
@@ -178,13 +224,14 @@ def _run_job(job: Job, params: dict) -> None:
             result_dir=str(out),
             phase="Done",
             progress=1.0,
+            indeterminate=False,
             state="done",
         )
         job.add_log(f"Saved to {out}")
     except Exception as exc:  # surface a friendly error, keep the server alive
         logger.error("job failed: %s", exc)
         job.add_log(traceback.format_exc().strip().splitlines()[-1])
-        job.set(state="error", error=str(exc), phase="Failed")
+        job.set(state="error", error=_friendly_error(exc), phase="Failed")
     finally:
         logger.removeHandler(handler)
 
@@ -204,14 +251,53 @@ def _read_metrics(out) -> dict:
     return {}
 
 
+# A Hugging Face model id is "namespace/name" (alphanumerics, '-', '_', '.').
+_HF_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+_MODEL_HINT = (
+    "Use a Hugging Face model ID like 'Qwen/Qwen3-14B', or a folder path on "
+    "this computer."
+)
+
+
+def _model_input_error(model: str) -> Optional[str]:
+    """Return a friendly message if ``model`` is not a usable model source.
+
+    Catches the common mistake of pasting an Ollama-style ``name:tag`` (e.g.
+    ``Qwen3:14B``) or other malformed ids, so the user sees guidance instead of
+    a raw huggingface_hub validation error. Existing local paths always pass.
+    """
+    model = model.strip()
+    if not model:
+        return "Please enter a model name or path."
+    if Path(model).exists():
+        return None
+    if ":" in model or not _HF_REPO_RE.match(model):
+        return f"{model!r} doesn't look like a Hugging Face model ID. {_MODEL_HINT}"
+    return None
+
+
+def _friendly_error(exc: Exception) -> str:
+    """Translate known huggingface_hub validation errors into plain guidance."""
+    msg = str(exc)
+    if "Repo id must use alphanumeric" in msg or "is not a valid model identifier" in msg:
+        return f"That doesn't look like a Hugging Face model ID. {_MODEL_HINT}"
+    return msg
+
+
 def _start_job(params: dict) -> tuple[bool, str]:
     if JOB.state == "running":
         return False, "A job is already running. Please wait for it to finish."
-    if not (params.get("model") or "").strip():
+    model = (params.get("model") or "").strip()
+    if not model:
         return False, "Please enter a model name or path."
+    err = _model_input_error(model)
+    if err:
+        return False, err
     # Reset state for a fresh run.
-    JOB.set(state="running", phase="Starting…", progress=0.0, log=[], metrics={},
-            result_dir=None, before_samples=[], after_samples=[], error=None, bundle=None)
+    JOB.set(state="running", phase="Starting…", progress=0.0, indeterminate=False,
+            log=[], metrics={}, result_dir=None, before_samples=[], after_samples=[],
+            error=None, bundle=None)
     threading.Thread(target=_run_job, args=(JOB, params), daemon=True).start()
     return True, "started"
 
@@ -348,7 +434,13 @@ INDEX_HTML = r"""<!doctype html>
   .hidden{display:none}
   .bar{height:9px;background:var(--soft);border-radius:6px;overflow:hidden;margin:10px 0}
   .bar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s ease}
-  .phase{font-weight:600}
+  /* Indeterminate: a moving sliver so the bar never looks frozen. */
+  .bar.indet > i{width:35%;transition:none;animation:indet 1.2s ease-in-out infinite}
+  @keyframes indet{0%{margin-left:-35%}100%{margin-left:100%}}
+  .phase{font-weight:600;display:flex;align-items:center;gap:8px}
+  .spinner{flex:0 0 auto;width:14px;height:14px;border:2px solid var(--soft);
+    border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
   pre.log{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;
     max-height:180px;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
     color:var(--muted);white-space:pre-wrap;margin:10px 0 0}
@@ -461,8 +553,8 @@ INDEX_HTML = r"""<!doctype html>
   <!-- progress -->
   <div id="progress" class="card hidden">
     <h2>Working…</h2>
-    <div class="phase" id="phase">Starting…</div>
-    <div class="bar"><i id="fill"></i></div>
+    <div class="phase"><span id="spin" class="spinner hidden"></span><span id="phase">Starting…</span></div>
+    <div class="bar" id="bar"><i id="fill"></i></div>
     <details><summary>Show details</summary><pre class="log" id="log"></pre></details>
   </div>
 
@@ -535,7 +627,10 @@ function poll(){ if(polling) clearInterval(polling); polling = setInterval(tick,
 async function tick(){
   let s; try { s = await (await fetch("/api/status")).json(); } catch(e){ return; }
   document.getElementById("phase").textContent = s.phase || "";
-  document.getElementById("fill").style.width = Math.round((s.progress||0)*100) + "%";
+  const indet = !!s.indeterminate;
+  document.getElementById("spin").classList.toggle("hidden", !indet);
+  document.getElementById("bar").classList.toggle("indet", indet);
+  if(!indet){ document.getElementById("fill").style.width = Math.round((s.progress||0)*100) + "%"; }
   document.getElementById("log").textContent = (s.log||[]).join("\n");
   document.getElementById("log").scrollTop = 1e9;
   if(s.state === "done"){ clearInterval(polling); renderResults(s); }

@@ -31,6 +31,7 @@ from .evaluate import evaluate_refusal
 from .metrics import kl_divergence, next_token_logprobs
 from .model_utils import ModelBundle, is_quantized, load_model_and_tokenizer
 from .optimize import optimize_ablation
+from .progress import ProgressCallback, emit
 
 logger = logging.getLogger("abliterate")
 
@@ -52,24 +53,31 @@ def build_directions(
     bundle: Optional[ModelBundle] = None,
     *,
     prompts: Optional[tuple[list[str], list[str]]] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> tuple[ModelBundle, RefusalDirections]:
     """Load the model (if needed) and compute per-layer candidate directions.
 
     ``prompts`` may be a preloaded ``(harmful, harmless)`` pair to avoid
-    re-reading and re-sampling the prompt sources.
+    re-reading and re-sampling the prompt sources. ``on_progress(phase,
+    fraction)`` reports each sub-step (activation collection, direction
+    computation) so a UI can advance during this otherwise-silent stage.
     """
     if bundle is None:
-        bundle = load_model_and_tokenizer(cfg.model)
+        bundle = load_model_and_tokenizer(cfg.model, on_progress=on_progress)
     harmful, harmless = prompts if prompts is not None else load_contrastive_prompts(cfg)
 
+    emit(on_progress, "Collecting harmful activations", 0.0)
     mean_harmful = collect_mean_activations(bundle, harmful, cfg.ablation, desc="harmful")
+    emit(on_progress, "Collecting harmless activations", 0.4)
     mean_harmless = collect_mean_activations(bundle, harmless, cfg.ablation, desc="harmless")
 
+    emit(on_progress, "Computing refusal directions", 0.8)
     directions = compute_refusal_directions(
         mean_harmful, mean_harmless,
         model_path=cfg.model.path,
         n_harmful=len(harmful), n_harmless=len(harmless),
     )
+    emit(on_progress, "Directions ready", 1.0)
     return bundle, directions
 
 
@@ -162,13 +170,16 @@ def optimize_and_apply(
     bundle: Optional[ModelBundle] = None,
     *,
     on_trial=None,
+    on_progress: Optional[ProgressCallback] = None,
     save: str = "model",
 ) -> Path:
     """Optimized abliteration: search params (refusals + KL), apply best, save.
 
     Direction-computation and evaluation prompts are sampled with different seeds
     so the search is scored on held-out prompts. ``on_trial(done, total)`` is
-    forwarded to the optimizer for progress reporting.
+    forwarded to the optimizer for progress reporting. ``on_progress(phase,
+    fraction)`` reports the pre-trial warm-up (prompt prep, direction
+    computation, baseline eval, reference capture) as a fraction of that stage.
 
     ``save`` selects the output:
       * ``"model"``   -- bake into weights, save a standalone HF model (default);
@@ -189,19 +200,33 @@ def optimize_and_apply(
         save = "bundle"
 
     ocfg = cfg.optimize
+
+    # Warm-up progress is reported as a fraction of the whole pre-trial stage:
+    # prompt prep + directions occupy [0, 0.6], baseline eval 0.65, and the
+    # reference-distribution capture [0.7, 1.0].
+    def _dir_progress(phase: str, frac: Optional[float]) -> None:
+        emit(on_progress, phase, None if frac is None else 0.6 * frac)
+
+    def _opt_progress(phase: str, frac: Optional[float]) -> None:
+        emit(on_progress, phase, None if frac is None else 0.7 + 0.3 * frac)
+
+    emit(on_progress, "Preparing prompts", 0.0)
     harmful_dir = _sampled(cfg.data.harmful, "harmful.txt", cfg.data.n_samples, cfg.data.seed)
     harmless_dir = _sampled(cfg.data.harmless, "harmless.txt", cfg.data.n_samples, cfg.data.seed)
     harmful_eval = _sampled(cfg.data.harmful, "harmful.txt", ocfg.n_eval_harmful, cfg.data.seed + 1)
     harmless_eval = _sampled(cfg.data.harmless, "harmless.txt", ocfg.n_eval_harmless, cfg.data.seed + 1)
 
-    bundle, directions = build_directions(cfg, bundle=bundle, prompts=(harmful_dir, harmless_dir))
+    bundle, directions = build_directions(
+        cfg, bundle=bundle, prompts=(harmful_dir, harmless_dir), on_progress=_dir_progress,
+    )
 
+    emit(on_progress, "Measuring baseline refusals", 0.65)
     before = evaluate_refusal(bundle, harmful_eval, max_new_tokens=ocfg.max_new_tokens)
     logger.info("refusal rate before optimization: %.1f%%", 100 * before["refusal_rate"])
 
     best_params, history = optimize_ablation(
         bundle, directions, ocfg, harmful_eval, harmless_eval,
-        model_cfg=cfg.model, on_trial=on_trial,
+        model_cfg=cfg.model, on_trial=on_trial, on_progress=_opt_progress,
     )
     best_result = min(history, key=lambda r: r.cost)
 

@@ -16,6 +16,13 @@ from typing import Optional
 
 logger = logging.getLogger("abliterate")
 
+# Memoized prompt lists, keyed by a stable identity for the source. Each distinct
+# source is read/loaded at most once per process, so the "loaded N prompts" log
+# line fires only on a real cache miss (previously the same file was re-read and
+# re-logged on every call -- e.g. once for the demo sample and again for the
+# direction/eval sets).
+_PROMPT_CACHE: dict[tuple, list[str]] = {}
+
 # Built-in dataset recipes: name -> (hf_repo, split, column, config_name)
 _KNOWN = {
     "advbench": ("walledai/AdvBench", "train", "prompt", None),
@@ -27,22 +34,43 @@ _KNOWN = {
 
 
 def load_prompts(source: Optional[str], *, default_file: str) -> list[str]:
-    """Return a list of prompt strings from a source (see module docstring)."""
+    """Return a list of prompt strings from a source (see module docstring).
+
+    Results are memoized per process: repeated calls for the same source return
+    a fresh copy of the cached list without re-reading the file or re-logging.
+    """
     if source is None:
-        return _read_text_file(_packaged_data_path(default_file))
+        path = _packaged_data_path(default_file)
+        return _cached(("file", str(path.resolve())), lambda: _read_text_file(path))
 
     key = source.lower()
     if key in _KNOWN:
-        return _load_known_dataset(key)
+        return _cached(("dataset", key), lambda: _load_known_dataset(key))
 
     path = Path(source)
     if path.exists():
-        return _read_text_file(path)
+        return _cached(("file", str(path.resolve())), lambda: _read_text_file(path))
 
     raise FileNotFoundError(
         f"prompt source {source!r} is neither a file nor a known dataset "
         f"({sorted(_KNOWN)})"
     )
+
+
+def _cached(key: tuple, loader) -> list[str]:
+    """Return a copy of the cached list for ``key``, loading it on first use."""
+    cached = _PROMPT_CACHE.get(key)
+    if cached is None:
+        cached = loader()
+        _PROMPT_CACHE[key] = cached
+    # Copy on the way out so a caller mutating the result cannot corrupt the
+    # cache for later callers.
+    return list(cached)
+
+
+def _clear_prompt_cache() -> None:
+    """Drop all memoized prompt lists (used by tests)."""
+    _PROMPT_CACHE.clear()
 
 
 def sample_prompts(prompts: list[str], n: int, seed: int) -> list[str]:

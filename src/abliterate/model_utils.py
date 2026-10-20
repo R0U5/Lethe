@@ -25,6 +25,7 @@ from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .config import ModelConfig
+from .progress import ProgressCallback, emit
 
 logger = logging.getLogger("abliterate")
 
@@ -98,17 +99,26 @@ def _is_local_path(path: str) -> bool:
     return p.exists() or (p.parent / p.name).exists()
 
 
-def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
+def load_model_and_tokenizer(
+    cfg: ModelConfig, *, on_progress: Optional[ProgressCallback] = None
+) -> ModelBundle:
     """Load a causal LM (optionally merging a LoRA/PEFT adapter) + tokenizer.
 
     Weights are loaded in a floating dtype: abliteration edits raw weights, so
     quantized (int8/int4) loading is intentionally not supported here.
+
+    ``on_progress(phase, fraction)`` is called at each sub-step so a UI can show
+    motion during the (otherwise opaque) load. ``fraction`` is ``None`` for
+    steps with no measurable progress (e.g. a weight download), signalling the
+    caller to show an indeterminate spinner.
     """
     dtype = resolve_dtype(cfg.dtype)
     tok_path = cfg.tokenizer_path or cfg.path
 
+    emit(on_progress, "Resolving tokenizer", 0.0)
     logger.info("loading tokenizer from %s", tok_path)
     use_local = _is_local_path(tok_path)
+    emit(on_progress, "Loading tokenizer", 0.05)
     tokenizer = AutoTokenizer.from_pretrained(
         tok_path,
         trust_remote_code=cfg.trust_remote_code,
@@ -131,9 +141,13 @@ def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
     if quant_config is not None:
         load_kwargs["quantization_config"] = quant_config
     use_local = _is_local_path(cfg.path)
+    # Downloading/reading the shards is unbounded from here, so report it as an
+    # indeterminate step (the UI shows a spinner rather than a frozen bar).
+    emit(on_progress, "Reading weights from disk" if use_local else "Downloading weights")
     model = AutoModelForCausalLM.from_pretrained(
         cfg.path, **{**load_kwargs, "local_files_only": use_local}
     )
+    emit(on_progress, "Loading into memory", 0.7)
 
     if cfg.lora_adapter:
         if quant_config is not None:
@@ -141,15 +155,18 @@ def load_model_and_tokenizer(cfg: ModelConfig) -> ModelBundle:
                 "cannot merge a LoRA adapter into a quantized model; load in "
                 "full precision to merge, or apply the adapter separately"
             )
+        emit(on_progress, "Merging LoRA adapter", 0.8)
         model = _merge_lora(model, cfg.lora_adapter)
 
     model.eval()
     model.requires_grad_(False)
 
+    emit(on_progress, "Resolving architecture", 0.9)
     hidden_size = _infer_hidden_size(model)
     layers = get_decoder_layers(model, cfg)
     logger.info("resolved architecture: hidden_size=%d, num_layers=%d",
                 hidden_size, len(layers))
+    emit(on_progress, "Model ready", 1.0)
     return ModelBundle(
         model=model,
         tokenizer=tokenizer,
