@@ -35,4 +35,4 @@ abliterate = "abliterate.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-abliterate = ["py.typed"]
+abliterate = ["py.typed", "sample_data/*.txt"]
