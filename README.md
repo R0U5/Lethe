@@ -213,7 +213,8 @@ tooling.
 
 ## Prompt data
 
-`data/harmful.txt` and `data/harmless.txt` ship as small runnable samples. The
+`src/abliterate/sample_data/harmful.txt` and
+`src/abliterate/sample_data/harmless.txt` ship as small runnable samples. The
 harmful set is generic, non-operational category prompts whose only role is to
 *elicit* the model's refusal behavior so its direction can be measured. For
 serious runs, point `--harmful` / `--harmless` at your own files (one prompt per
