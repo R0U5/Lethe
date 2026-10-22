@@ -3,7 +3,7 @@
 A "source" is one of:
     * a path to a newline-delimited text file ('#' comments and blanks ignored),
     * a built-in name ("advbench", "alpaca") loaded via the `datasets` library, or
-    * ``None``, which falls back to the packaged sample files under data/.
+    * ``None``, which falls back to the packaged sample prompt files.
 """
 
 from __future__ import annotations
@@ -95,21 +95,10 @@ def _read_text_file(path: Path) -> list[str]:
 
 
 def _packaged_data_path(filename: str) -> Path:
-    """Locate a file shipped in the repo-level data/ directory.
-
-    Works both from a source checkout and, best-effort, an installed package.
-    """
-    # Source checkout: <repo>/data/<filename> (this file is src/abliterate/).
-    candidate = Path(__file__).resolve().parents[2] / "data" / filename
-    if candidate.exists():
-        return candidate
-    # Installed layout fallback.
-    try:
-        res = resources.files("abliterate").joinpath("data", filename)
-        if res.is_file():
-            return Path(str(res))
-    except (ModuleNotFoundError, AttributeError):
-        pass
+    """Locate sample prompts in both source checkouts and installed packages."""
+    res = resources.files("abliterate").joinpath("sample_data", filename)
+    if res.is_file():
+        return Path(str(res))
     raise FileNotFoundError(
         f"packaged sample data {filename!r} not found; pass an explicit source"
     )
