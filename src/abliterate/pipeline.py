@@ -29,7 +29,12 @@ from .data import load_prompts, sample_prompts
 from .directions import RefusalDirections, compute_refusal_directions
 from .evaluate import evaluate_refusal
 from .metrics import kl_divergence, next_token_logprobs
-from .model_utils import ModelBundle, is_quantized, load_model_and_tokenizer
+from .model_utils import (
+    ModelBundle,
+    is_quantized,
+    load_model_and_tokenizer,
+    save_model_and_tokenizer,
+)
 from .optimize import optimize_ablation
 from .progress import ProgressCallback, emit
 
@@ -139,8 +144,7 @@ def apply_and_save(
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     logger.info("saving abliterated model to %s", out)
-    bundle.model.save_pretrained(out)
-    bundle.tokenizer.save_pretrained(out)
+    save_model_and_tokenizer(bundle, out)
 
     manifest = {
         "source_model": cfg.model.path,
@@ -251,8 +255,7 @@ def optimize_and_apply(
         )
         out.mkdir(parents=True, exist_ok=True)
         logger.info("saving optimized abliterated model to %s", out)
-        bundle.model.save_pretrained(out)
-        bundle.tokenizer.save_pretrained(out)
+        save_model_and_tokenizer(bundle, out)
         manifest = {
             "source_model": cfg.model.path,
             "lora_adapter": cfg.model.lora_adapter,

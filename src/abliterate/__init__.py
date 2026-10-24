@@ -13,7 +13,11 @@ Public API:
 """
 
 from .config import AblationConfig, Config, DataConfig, ModelConfig, OptimizeConfig
-from .model_utils import load_model_and_tokenizer
+from .model_utils import (
+    load_model_and_tokenizer,
+    make_generation_config_saveable,
+    save_model_and_tokenizer,
+)
 from .activations import collect_mean_activations
 from .directions import RefusalDirections, compute_refusal_directions
 from .ablation import (
@@ -35,6 +39,8 @@ __all__ = [
     "ModelConfig",
     "OptimizeConfig",
     "load_model_and_tokenizer",
+    "make_generation_config_saveable",
+    "save_model_and_tokenizer",
     "collect_mean_activations",
     "RefusalDirections",
     "compute_refusal_directions",
