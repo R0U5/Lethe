@@ -201,7 +201,7 @@ def cmd_optimize(args) -> int:
 def cmd_apply_bundle(args) -> int:
     """Bake a saved bundle into a full-precision model and save it."""
     from .bundle import AblationBundle
-    from .model_utils import load_model_and_tokenizer
+    from .model_utils import load_model_and_tokenizer, save_model_and_tokenizer
 
     cfg = build_config(args)
     bundle = load_model_and_tokenizer(cfg.model)
@@ -209,8 +209,7 @@ def cmd_apply_bundle(args) -> int:
     modified = abl.apply_permanently(bundle.model, model_cfg=cfg.model)
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    bundle.model.save_pretrained(out)
-    bundle.tokenizer.save_pretrained(out)
+    save_model_and_tokenizer(bundle, out)
     print(f"baked bundle into {modified} matrices; saved model -> {out}")
     return 0
 
