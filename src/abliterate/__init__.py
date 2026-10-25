@@ -30,6 +30,18 @@ from .ablation import (
 )
 from .bundle import AblationBundle, build_bundle, load_abliterated
 from .metrics import kl_divergence, next_token_logprobs
+from .evaluate import (
+    CAUTION_MARKERS,
+    REFUSAL_MARKERS,
+    evaluate_refusal,
+    generate_completions,
+    has_caution,
+    is_refusal,
+    refusal_rate,
+    refusal_stats,
+    set_caution_markers,
+    set_refusal_markers,
+)
 from .optimize import optimize_ablation
 
 __all__ = [
@@ -53,6 +65,16 @@ __all__ = [
     "optimize_ablation",
     "kl_divergence",
     "next_token_logprobs",
+    "evaluate_refusal",
+    "generate_completions",
+    "is_refusal",
+    "has_caution",
+    "refusal_rate",
+    "refusal_stats",
+    "set_refusal_markers",
+    "set_caution_markers",
+    "REFUSAL_MARKERS",
+    "CAUTION_MARKERS",
     "AblationBundle",
     "build_bundle",
     "load_abliterated",
