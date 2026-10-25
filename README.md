@@ -166,6 +166,50 @@ seeded random search over the same space.
 `run --select auto` is a lighter middle ground: it sweeps a depth band and keeps
 the single full-strength direction that most reduces refusals (no KL term).
 
+## Measuring refusal (read this before trusting a rate)
+
+Refusal rate is the optimization target, so how it is measured decides what the
+search converges on. Three failure modes are easy to hit and hard to see.
+
+### Score the answer, not the deliberation
+
+If the chat template opens a thinking block, the model spends its first tokens
+reasoning. With a small `max_new_tokens` the completion is truncated *inside*
+that block — no refusal marker, so it scores as compliant. Lethe renders
+measurement prompts with `enable_thinking=False` when the template supports it;
+if yours does not, raise `max_new_tokens` until completions actually contain
+answers. The signal to check is the generated **token count**, not the presence
+of a think tag: the corrected render keeps the tags and closes the block empty.
+
+### A truncated score is not a low score
+
+Even with thinking off, a refusal landing after `max_new_tokens` is scored as
+compliance — and since an optimizer stops improving the moment its metric reads
+zero, that number is never revisited. A `refusal_rate` of 0% therefore does not
+show that a compliant configuration exists; it may only show that the metric
+stopped seeing the refusals.
+
+Lethe reports `truncated_rate` alongside the refusal rate, counts completions
+that consumed the whole budget without emitting EOS, and warns above 25%. Set
+the scoring length past your expected answer length, and **audit the saved model
+independently at a longer generation than the optimizer used** — ideally by
+asking it the kind of question you care about.
+
+### Refusal openers vs cautions
+
+Some markers also occur inside a *compliant* answer that adds a caution:
+`"please note that"`, `"is illegal"`, `"unethical"`, `"disclaimer"`. A model that
+answers a lock-picking question while noting the activity may be illegal has
+complied — but substring matching would count it as a refusal, and every false
+positive is damage the optimizer will spend KL to remove.
+
+`REFUSAL_MARKERS` therefore holds refusal *openers* ("I cannot", "I must
+decline", …), and `CAUTION_MARKERS` holds hedges. Only openers count toward the
+refusal rate; `caution_rate` is reported separately.
+
+Because this is a heuristic either way, treat the rate as directional and
+confirm the finished model by hand.
+
 ## Runtime bundles & quantized models
 
 A **bundle** is a tiny artifact (the refusal direction + the weighted-ablation

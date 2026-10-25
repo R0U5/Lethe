@@ -131,7 +131,7 @@ def optimize_ablation(
     emit(on_progress, "Capturing reference distribution", 0.0)
     logger.info("capturing reference distribution on %d harmless prompts", len(harmless_eval))
     reference = next_token_logprobs(
-        bundle, harmless_eval, batch_size=max(1, cfg.n_eval_harmless // 4)
+        bundle, harmless_eval, batch_size=max(1, cfg.n_eval_harmless // 2)
     )
     emit(on_progress, "Reference distribution captured", 1.0)
 
@@ -144,13 +144,13 @@ def optimize_ablation(
             completions = generate_completions(
                 bundle, harmful_eval,
                 max_new_tokens=cfg.max_new_tokens,
-                batch_size=max(1, cfg.n_eval_harmful // 4),
+                batch_size=max(1, cfg.n_eval_harmful // 2),
             )
             nc = not_compliant_rate(completions)   # refusals + wreckage: what we minimise
             rr = refusal_rate(completions)         # reported separately
             deg = degenerate_rate(completions)
             current = next_token_logprobs(
-                bundle, harmless_eval, batch_size=max(1, cfg.n_eval_harmless // 4)
+                bundle, harmless_eval, batch_size=max(1, cfg.n_eval_harmless // 2)
             )
         kl = kl_divergence(reference, current)
         cost = nc + cfg.kl_weight * kl
