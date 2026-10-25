@@ -237,6 +237,8 @@ def optimize_and_apply(
     metrics = {
         "refusal_rate_before": round(before["refusal_rate"], 4),
         "refusal_rate_after": round(best_result.refusal_rate, 4),
+        "degenerate_rate_after": round(getattr(best_result, "degenerate_rate", 0.0), 4),
+        "non_compliant_rate_after": round(getattr(best_result, "non_compliant_rate", 0.0), 4),
         "kl_divergence": round(best_result.kl, 4),
         "cost": round(best_result.cost, 4),
         "n_trials": len(history),
