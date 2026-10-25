@@ -74,6 +74,12 @@ below) rather than an in-place weight edit.
 
 No flags to learn. Launch the built-in local app (zero extra dependencies):
 
+### The web UI
+
+![Abliterate web UI](docs/ui-screenshot.png)
+
+
+
 ```bash
 abliterate ui
 ```
@@ -220,6 +226,7 @@ needs the `datasets` extra).
 from abliterate import (
     Config, load_model_and_tokenizer, collect_mean_activations,
     compute_refusal_directions, orthogonalize_model, AblationHooks,
+    save_model_and_tokenizer,
 )
 from abliterate.config import ModelConfig, AblationConfig
 
@@ -240,8 +247,9 @@ with AblationHooks(bundle.model, direction):
 
 # Permanent: bake it into the weights and save
 orthogonalize_model(bundle.model, direction, hidden_size=bundle.hidden_size)
-bundle.model.save_pretrained("output/abliterated")
-bundle.tokenizer.save_pretrained("output/abliterated")
+# save_model_and_tokenizer repairs a checkpoint's generation config if needed
+# (some models ship one transformers refuses to save) and writes both files.
+save_model_and_tokenizer(bundle, "output/abliterated")
 ```
 
 Automated, KL-aware optimization:

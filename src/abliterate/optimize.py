@@ -8,7 +8,9 @@ model. We treat abliteration as black-box optimization over:
     * a per-layer strength *kernel* for the attention-out and MLP-down
       projections separately,
 
-scoring each candidate by ``cost = refusal_rate + kl_weight * KL`` -- refusals
+scoring each candidate by ``cost = not_compliant_rate + kl_weight * KL`` -- refusals
+      *and* degenerate output counted as non-compliant (see evaluate.is_degenerate), so a
+      wrecked model cannot buy a lower rate by ceasing to produce usable text; refusals
 measured by generating on held-out harmful prompts, KL measured against the
 original model on held-out harmless prompts. Optuna's TPE sampler drives the
 search when installed; otherwise a seeded random search over the same space is
@@ -27,7 +29,7 @@ import torch
 from .ablation import AblationParams, LayerWeightKernel, WeightedAblationHooks
 from .config import ModelConfig, OptimizeConfig
 from .directions import RefusalDirections
-from .evaluate import generate_completions, refusal_rate
+from .evaluate import degenerate_rate, generate_completions, not_compliant_rate, refusal_rate
 from .metrics import kl_divergence, next_token_logprobs
 from .model_utils import ModelBundle
 from .progress import ProgressCallback, emit
@@ -41,6 +43,8 @@ class TrialResult:
     cost: float
     refusal_rate: float
     kl: float
+    non_compliant_rate: float = 0.0   # refusals + degenerate output: the cost input
+    degenerate_rate: float = 0.0      # wreckage alone, reported apart from refusals
 
 
 class _Suggester(Protocol):
@@ -142,13 +146,16 @@ def optimize_ablation(
                 max_new_tokens=cfg.max_new_tokens,
                 batch_size=max(1, cfg.n_eval_harmful // 4),
             )
-            rr = refusal_rate(completions)
+            nc = not_compliant_rate(completions)   # refusals + wreckage: what we minimise
+            rr = refusal_rate(completions)         # reported separately
+            deg = degenerate_rate(completions)
             current = next_token_logprobs(
                 bundle, harmless_eval, batch_size=max(1, cfg.n_eval_harmless // 4)
             )
         kl = kl_divergence(reference, current)
-        cost = rr + cfg.kl_weight * kl
-        result = TrialResult(params=params, cost=cost, refusal_rate=rr, kl=kl)
+        cost = nc + cfg.kl_weight * kl
+        result = TrialResult(params=params, cost=cost, refusal_rate=rr, kl=kl,
+                             non_compliant_rate=nc, degenerate_rate=deg)
         history.append(result)
         logger.info(
             "trial %d/%d: cost=%.4f (refusal=%.1f%%, KL=%.4f)",
@@ -165,7 +172,7 @@ def optimize_ablation(
     best_result = min(history, key=lambda r: r.cost)
     logger.info(
         "best: cost=%.4f (refusal=%.1f%%, KL=%.4f) after %d trials",
-        best_result.cost, 100 * best_result.refusal_rate, best_result.kl, len(history),
+        best_result.cost, 100 * best_result.non_compliant_rate, best_result.kl, len(history),
     )
     return best_result.params, history
 
@@ -188,7 +195,9 @@ def _run_optuna(evaluate_params, n_layers, n_candidates, cfg: OptimizeConfig):
     def objective(trial):
         params = sample_params(trial, n_layers, n_candidates, cfg)
         result = evaluate_params(params)
+        trial.set_user_attr("non_compliant_rate", result.non_compliant_rate)
         trial.set_user_attr("refusal_rate", result.refusal_rate)
+        trial.set_user_attr("degenerate_rate", result.degenerate_rate)
         trial.set_user_attr("kl", result.kl)
         return result.cost
 

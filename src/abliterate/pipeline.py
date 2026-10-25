@@ -29,7 +29,12 @@ from .data import load_prompts, sample_prompts
 from .directions import RefusalDirections, compute_refusal_directions
 from .evaluate import evaluate_refusal
 from .metrics import kl_divergence, next_token_logprobs
-from .model_utils import ModelBundle, is_quantized, load_model_and_tokenizer
+from .model_utils import (
+    ModelBundle,
+    is_quantized,
+    load_model_and_tokenizer,
+    save_model_and_tokenizer,
+)
 from .optimize import optimize_ablation
 from .progress import ProgressCallback, emit
 
@@ -139,8 +144,7 @@ def apply_and_save(
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     logger.info("saving abliterated model to %s", out)
-    bundle.model.save_pretrained(out)
-    bundle.tokenizer.save_pretrained(out)
+    save_model_and_tokenizer(bundle, out)
 
     manifest = {
         "source_model": cfg.model.path,
@@ -233,6 +237,8 @@ def optimize_and_apply(
     metrics = {
         "refusal_rate_before": round(before["refusal_rate"], 4),
         "refusal_rate_after": round(best_result.refusal_rate, 4),
+        "degenerate_rate_after": round(getattr(best_result, "degenerate_rate", 0.0), 4),
+        "non_compliant_rate_after": round(getattr(best_result, "non_compliant_rate", 0.0), 4),
         "kl_divergence": round(best_result.kl, 4),
         "cost": round(best_result.cost, 4),
         "n_trials": len(history),
@@ -251,8 +257,7 @@ def optimize_and_apply(
         )
         out.mkdir(parents=True, exist_ok=True)
         logger.info("saving optimized abliterated model to %s", out)
-        bundle.model.save_pretrained(out)
-        bundle.tokenizer.save_pretrained(out)
+        save_model_and_tokenizer(bundle, out)
         manifest = {
             "source_model": cfg.model.path,
             "lora_adapter": cfg.model.lora_adapter,

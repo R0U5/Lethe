@@ -14,6 +14,7 @@ is the decoder stack). Anything exotic can be pinned via ``ModelConfig``.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ from typing import Iterator, Optional
 import torch
 import transformers
 from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 from .config import ModelConfig
 from .progress import ProgressCallback, emit
@@ -81,7 +82,7 @@ class ModelBundle:
     """A loaded model with its tokenizer and resolved architecture handles."""
 
     model: nn.Module
-    tokenizer: object
+    tokenizer: PreTrainedTokenizerBase
     hidden_size: int
     num_layers: int
 
@@ -173,6 +174,110 @@ def load_model_and_tokenizer(
         hidden_size=hidden_size,
         num_layers=len(layers),
     )
+
+
+# Generation parameters that only take effect while sampling, paired with the
+# value that means "left at its default". transformers validates a
+# GenerationConfig before writing it (`GenerationConfig.save_pretrained` calls
+# `validate(strict=True)`) and refuses to save one that sets any of these while
+# `do_sample` is not enabled:
+#
+#     ValueError: GenerationConfig is invalid:
+#     - `temperature`: `do_sample` is set not to set `True`. However,
+#       `temperature` is set to `0.9` -- this flag is only used in sample-based
+#       generation modes. You should set `do_sample=True` or unset `temperature`.
+#
+# Real checkpoints do this -- Llama-2 derivatives such as
+# `NousResearch/Nous-Hermes-Llama2-13b` ship `temperature: 0.9` and
+# `top_p: 0.6` with no `do_sample`, so an otherwise-successful abliteration dies
+# at the very last step. Well-formed checkpoints (e.g. Qwen2.5) pair the same
+# values with `do_sample: true`, so enabling sampling restores that shape and
+# keeps the checkpoint's recommended decoding values instead of discarding them.
+_SAMPLING_ONLY_GENERATION_PARAMS = (
+    ("temperature", 1.0),
+    ("top_p", 1.0),
+    ("min_p", None),
+    ("top_h", None),
+    ("typical_p", 1.0),
+    ("top_k", 50),
+    ("epsilon_cutoff", 0.0),
+    ("eta_cutoff", 0.0),
+)
+
+
+def make_generation_config_saveable(model: nn.Module) -> list[str]:
+    """Make ``model``'s generation config legal to save; return the fields fixed.
+
+    Some checkpoints pair sampling-only parameters with no ``do_sample``, which
+    trips the strict validation ``save_pretrained`` performs. Enable sampling in
+    that case (a no-op for configs that are already valid, including ones with
+    ``do_sample: true``), so the run can finish and the checkpoint keeps its
+    recommended decoding values.
+
+    Returns the names of the parameters that required the change; empty when
+    the config was already saveable.
+    """
+    gen_cfg = getattr(model, "generation_config", None)
+    if gen_cfg is None or gen_cfg.do_sample is True:
+        return []
+
+    overridden = [
+        name
+        for name, default in _SAMPLING_ONLY_GENERATION_PARAMS
+        if (value := getattr(gen_cfg, name, None)) is not None and value != default
+    ]
+    if not overridden:
+        return []
+
+    gen_cfg.do_sample = True
+    logger.info(
+        "generation config sets %s without do_sample; enabling sampling so it "
+        "can be saved",
+        ", ".join(overridden),
+    )
+    return overridden
+
+
+def _save_pretrained_in_model_namespace(model: nn.Module, out) -> None:
+    """``save_pretrained`` with the checkpoint key mapping left unreversed.
+
+    Some architectures declare an on-disk naming convention that differs from
+    the in-memory module tree. Qwen3.5 stores text weights as
+    ``model.language_model.*`` and its load-time mapping rewrites them to
+    ``model.*``. By default ``save_pretrained`` *reverses* that rewrite, emitting
+    keys that name modules the loaded model does not have. That is fatal as soon
+    as one tensor lives on the meta device (any ``device_map`` that offloads),
+    because materializing it resolves the module by name::
+
+        AttributeError: Qwen3_5TextModel has no attribute `language_model`
+
+    Saving in the model's own namespace (``save_original_format=False``) keeps
+    every key resolvable; the load-time mapping then simply does not match.
+    That argument postdates our transformers floor, so pass it only when the
+    signature accepts it.
+    """
+    kwargs: dict[str, object] = {}
+    try:
+        if "save_original_format" in inspect.signature(model.save_pretrained).parameters:
+            kwargs["save_original_format"] = False
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        pass
+    model.save_pretrained(out, **kwargs)
+
+
+def save_model_and_tokenizer(bundle: "ModelBundle", out) -> None:
+    """Save an abliterated model + tokenizer, repairing the generation config.
+
+    Always save through this rather than calling ``save_pretrained`` directly:
+    a checkpoint whose generation config is invalid (see
+    ``make_generation_config_saveable``) otherwise fails here, after all of the
+    expensive work has already been done. Models loaded through a ``device_map``
+    that offloads are handled too - see
+    ``_save_pretrained_in_model_namespace``.
+    """
+    make_generation_config_saveable(bundle.model)
+    _save_pretrained_in_model_namespace(bundle.model, out)
+    bundle.tokenizer.save_pretrained(out)
 
 
 def _build_quantization_config(cfg: ModelConfig):
