@@ -71,3 +71,46 @@ def test_duplicates_in_the_source_are_not_handed_to_both_sides(tmp_path):
     dir_prompts, eval_prompts = _sampled_holdout(src, "harmful.txt", 10, 5, seed=0)
 
     assert dir_prompts.count("same prompt") + eval_prompts.count("same prompt") <= 10
+
+
+def test_classic_path_validates_on_held_out_prompts(tmp_path, monkeypatch):
+    """The classic path scored itself on harmful[:16] -- its own direction prompts.
+
+    Regression for the non-search path: the prompts that pick the direction and
+    produce the reported refusal rate must come from outside the direction set.
+    """
+    from abliterate.config import Config, DataConfig, ModelConfig
+    from abliterate.pipeline import _classic_val_prompts, _sampled_holdout
+
+    prompts = [f"prompt number {i}" for i in range(148)]
+    src = tmp_path / "harmful.txt"
+    src.write_text("\n".join(prompts) + "\n", encoding="utf-8")
+
+    cfg = Config(model=ModelConfig(path="unused"),
+                 data=DataConfig(harmful=str(src), n_samples=128, seed=0))
+
+    val = _classic_val_prompts(cfg)
+    assert val, "classic path must still produce validation prompts"
+    assert len(val) == 16
+
+    dir_prompts, _ = _sampled_holdout(str(src), "harmful.txt", 128, 16, seed=0)
+    overlap = set(val) & set(dir_prompts)
+    assert not overlap, f"classic validation reused direction prompts: {sorted(overlap)[:3]}"
+
+
+def test_classic_and_search_paths_agree_on_the_split(tmp_path):
+    """Both paths must draw their held-out prompts from the same complement."""
+    from abliterate.pipeline import _classic_val_prompts, _sampled_holdout
+    from abliterate.config import Config, DataConfig, ModelConfig
+
+    prompts = [f"p{i}" for i in range(200)]
+    src = tmp_path / "harmful.txt"
+    src.write_text("\n".join(prompts) + "\n", encoding="utf-8")
+    cfg = Config(model=ModelConfig(path="unused"),
+                 data=DataConfig(harmful=str(src), n_samples=100, seed=7))
+
+    classic = set(_classic_val_prompts(cfg))
+    search_dir, search_eval = _sampled_holdout(str(src), "harmful.txt", 100, 16, seed=7)
+
+    assert not classic & set(search_dir)
+    assert not set(search_eval) & set(search_dir)

@@ -170,6 +170,19 @@ def _sampled(source, default_file, n, seed):
     return sample_prompts(load_prompts(source, default_file=default_file), n, seed)
 
 
+def _classic_val_prompts(cfg: Config, n: int = 16) -> list[str]:
+    """Validation prompts for the classic (non-search) path.
+
+    These both pick the direction (``select="auto"``) and produce the refusal rates
+    the run reports, so they must not overlap the prompts the direction is fitted to.
+    ``harmful[:n]`` did overlap them; this draws from the complement instead.
+    """
+    _, prompts = _sampled_holdout(
+        cfg.data.harmful, "harmful.txt", cfg.data.n_samples, n, cfg.data.seed,
+    )
+    return prompts
+
+
 def _sampled_holdout(source, default_file, n_dir, n_eval, seed):
     """Sample direction prompts and evaluation prompts from DISJOINT parts.
 
@@ -336,7 +349,11 @@ def run(cfg: Config, *, select: str = "config", evaluate: bool = True,
     harmful, harmless = load_contrastive_prompts(cfg)
     bundle, directions = build_directions(cfg, prompts=(harmful, harmless))
 
-    val_prompts = harmful[: min(16, len(harmful))]
+    # Score on prompts the direction was NOT fitted to. Taking harmful[:16] scored the
+    # ablation on the very prompts that shaped the direction, so the refusal rate it
+    # printed could not be reproduced on unseen prompts -- measured at 4.2% reported
+    # against 30% served on a Qwen2.5-7B.
+    val_prompts = _classic_val_prompts(cfg)
 
     index, scores = select_direction_index(
         bundle, directions, cfg, method=select, val_prompts=val_prompts,
