@@ -14,6 +14,7 @@ is the decoder stack). Anything exotic can be pinned via ``ModelConfig``.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -237,16 +238,45 @@ def make_generation_config_saveable(model: nn.Module) -> list[str]:
     return overridden
 
 
+def _save_pretrained_in_model_namespace(model: nn.Module, out) -> None:
+    """``save_pretrained`` with the checkpoint key mapping left unreversed.
+
+    Some architectures declare an on-disk naming convention that differs from
+    the in-memory module tree. Qwen3.5 stores text weights as
+    ``model.language_model.*`` and its load-time mapping rewrites them to
+    ``model.*``. By default ``save_pretrained`` *reverses* that rewrite, emitting
+    keys that name modules the loaded model does not have. That is fatal as soon
+    as one tensor lives on the meta device (any ``device_map`` that offloads),
+    because materializing it resolves the module by name::
+
+        AttributeError: Qwen3_5TextModel has no attribute `language_model`
+
+    Saving in the model's own namespace (``save_original_format=False``) keeps
+    every key resolvable; the load-time mapping then simply does not match.
+    That argument postdates our transformers floor, so pass it only when the
+    signature accepts it.
+    """
+    kwargs: dict[str, object] = {}
+    try:
+        if "save_original_format" in inspect.signature(model.save_pretrained).parameters:
+            kwargs["save_original_format"] = False
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        pass
+    model.save_pretrained(out, **kwargs)
+
+
 def save_model_and_tokenizer(bundle: "ModelBundle", out) -> None:
     """Save an abliterated model + tokenizer, repairing the generation config.
 
     Always save through this rather than calling ``save_pretrained`` directly:
     a checkpoint whose generation config is invalid (see
     ``make_generation_config_saveable``) otherwise fails here, after all of the
-    expensive work has already been done.
+    expensive work has already been done. Models loaded through a ``device_map``
+    that offloads are handled too - see
+    ``_save_pretrained_in_model_namespace``.
     """
     make_generation_config_saveable(bundle.model)
-    bundle.model.save_pretrained(out)
+    _save_pretrained_in_model_namespace(bundle.model, out)
     bundle.tokenizer.save_pretrained(out)
 
 
