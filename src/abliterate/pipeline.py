@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -169,6 +170,56 @@ def _sampled(source, default_file, n, seed):
     return sample_prompts(load_prompts(source, default_file=default_file), n, seed)
 
 
+def _classic_val_prompts(cfg: Config, n: int = 16) -> list[str]:
+    """Validation prompts for the classic (non-search) path.
+
+    These both pick the direction (``select="auto"``) and produce the refusal rates
+    the run reports, so they must not overlap the prompts the direction is fitted to.
+    ``harmful[:n]`` did overlap them; this draws from the complement instead.
+    """
+    _, prompts = _sampled_holdout(
+        cfg.data.harmful, "harmful.txt", cfg.data.n_samples, n, cfg.data.seed,
+    )
+    return prompts
+
+
+def _sampled_holdout(source, default_file, n_dir, n_eval, seed):
+    """Sample direction prompts and evaluation prompts from DISJOINT parts.
+
+    Sampling both with different seeds is not enough. ``sample_prompts`` returns the
+    whole list once ``n`` covers it, so a prompt file no larger than ``n_dir`` yields
+    evaluation prompts that overlap the very prompts the refusal direction was fitted
+    to: the search then scores itself on its own training data and reports refusal
+    rates it cannot reproduce on unseen prompts. Draw the evaluation prompts from the
+    complement instead, and say so loudly when the file is too small to hold any out.
+    """
+    prompts = load_prompts(source, default_file=default_file)
+    dir_prompts = sample_prompts(prompts, n_dir, seed)
+
+    # Remove the sampled direction prompts multiset-wise, so duplicate lines in the
+    # file are handled correctly and evaluation never reuses a direction prompt.
+    remaining_counts = Counter(dir_prompts)
+    remaining: list[str] = []
+    for prompt in prompts:
+        if remaining_counts[prompt] > 0:
+            remaining_counts[prompt] -= 1
+        else:
+            remaining.append(prompt)
+
+    if len(remaining) < n_eval:
+        logger.warning(
+            "hold-out exhausted: %d prompt(s) left after sampling %d for the refusal "
+            "direction, but %d requested for evaluation -- the evaluation set will "
+            "reuse direction prompts, so the search grades its own training data. "
+            "Give a prompt file with more than %d entries to score on unseen prompts.",
+            len(remaining), n_dir, n_eval, n_dir + n_eval,
+        )
+    eval_prompts = sample_prompts(remaining, n_eval, seed + 1)
+    if not eval_prompts:
+        eval_prompts = sample_prompts(prompts, n_eval, seed + 1)
+    return dir_prompts, eval_prompts
+
+
 def optimize_and_apply(
     cfg: Config,
     bundle: Optional[ModelBundle] = None,
@@ -179,8 +230,10 @@ def optimize_and_apply(
 ) -> Path:
     """Optimized abliteration: search params (refusals + KL), apply best, save.
 
-    Direction-computation and evaluation prompts are sampled with different seeds
-    so the search is scored on held-out prompts. ``on_trial(done, total)`` is
+    Evaluation prompts are drawn from the complement of the direction prompts, so the
+    search is scored on prompts the refusal direction was NOT fitted to. When the
+    prompt file is too small to hold anything out, a warning says so rather than
+    reporting a silently self-scored number. ``on_trial(done, total)`` is
     forwarded to the optimizer for progress reporting. ``on_progress(phase,
     fraction)`` reports the pre-trial warm-up (prompt prep, direction
     computation, baseline eval, reference capture) as a fraction of that stage.
@@ -215,10 +268,12 @@ def optimize_and_apply(
         emit(on_progress, phase, None if frac is None else 0.7 + 0.3 * frac)
 
     emit(on_progress, "Preparing prompts", 0.0)
-    harmful_dir = _sampled(cfg.data.harmful, "harmful.txt", cfg.data.n_samples, cfg.data.seed)
-    harmless_dir = _sampled(cfg.data.harmless, "harmless.txt", cfg.data.n_samples, cfg.data.seed)
-    harmful_eval = _sampled(cfg.data.harmful, "harmful.txt", ocfg.n_eval_harmful, cfg.data.seed + 1)
-    harmless_eval = _sampled(cfg.data.harmless, "harmless.txt", ocfg.n_eval_harmless, cfg.data.seed + 1)
+    harmful_dir, harmful_eval = _sampled_holdout(
+        cfg.data.harmful, "harmful.txt", cfg.data.n_samples, ocfg.n_eval_harmful, cfg.data.seed,
+    )
+    harmless_dir, harmless_eval = _sampled_holdout(
+        cfg.data.harmless, "harmless.txt", cfg.data.n_samples, ocfg.n_eval_harmless, cfg.data.seed,
+    )
 
     bundle, directions = build_directions(
         cfg, bundle=bundle, prompts=(harmful_dir, harmless_dir), on_progress=_dir_progress,
@@ -294,7 +349,11 @@ def run(cfg: Config, *, select: str = "config", evaluate: bool = True,
     harmful, harmless = load_contrastive_prompts(cfg)
     bundle, directions = build_directions(cfg, prompts=(harmful, harmless))
 
-    val_prompts = harmful[: min(16, len(harmful))]
+    # Score on prompts the direction was NOT fitted to. Taking harmful[:16] scored the
+    # ablation on the very prompts that shaped the direction, so the refusal rate it
+    # printed could not be reproduced on unseen prompts -- measured at 4.2% reported
+    # against 30% served on a Qwen2.5-7B.
+    val_prompts = _classic_val_prompts(cfg)
 
     index, scores = select_direction_index(
         bundle, directions, cfg, method=select, val_prompts=val_prompts,

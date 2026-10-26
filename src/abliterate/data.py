@@ -43,6 +43,10 @@ def load_prompts(source: Optional[str], *, default_file: str) -> list[str]:
         path = _packaged_data_path(default_file)
         return _cached(("file", str(path.resolve())), lambda: _read_text_file(path))
 
+    # Accept os.PathLike as well as str: the branch below wraps the source in Path(),
+    # so a Path argument is clearly intended to work, but it crashed on .lower()
+    # before reaching there with a confusing AttributeError.
+    source = str(source)
     key = source.lower()
     if key in _KNOWN:
         return _cached(("dataset", key), lambda: _load_known_dataset(key))
