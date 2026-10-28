@@ -1,0 +1,10 @@
+# Normalise the scripts that have to survive a round trip through a filesystem
+# that does not agree with us about line endings.
+#
+# A shell script stored with CRLF endings fails on Linux and macOS with
+# "bad interpreter: /usr/bin/env: 'bash\r': No such file or directory", which is
+# a confusing way to find out your editor defaulted to Windows endings. Pin it.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

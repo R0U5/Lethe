@@ -15,6 +15,7 @@ is the decoder stack). Anything exotic can be pinned via ``ModelConfig``.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +101,76 @@ def _is_local_path(path: str) -> bool:
     return p.exists() or (p.parent / p.name).exists()
 
 
+class UnsupportedArchitectureError(ValueError):
+    """The checkpoint's ``model_type`` is unknown to the installed transformers.
+
+    Subclasses ``ValueError`` so callers guarding a load keep working; it exists
+    to replace transformers' own message, which blames the checkpoint and never
+    mentions the one thing that fixes it.
+    """
+
+
+def _model_type_from(config_path: Path) -> Optional[str]:
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    model_type = raw.get("model_type")
+    return model_type if isinstance(model_type, str) else None
+
+
+def read_model_type(path: str) -> Optional[str]:
+    """The ``model_type`` a checkpoint declares, or None if it can't be read.
+
+    Best-effort by design: an unreachable hub, a gated repo or a missing
+    ``config.json`` all return None so this never blocks a load transformers
+    would otherwise handle.
+    """
+    local = Path(path) / "config.json"
+    if local.is_file():
+        return _model_type_from(local)
+    try:
+        from huggingface_hub import hf_hub_download
+
+        downloaded = hf_hub_download(repo_id=path, filename="config.json")
+    except Exception:  # offline, private, gated, or not a hub id at all
+        return None
+    return _model_type_from(Path(downloaded))
+
+
+def assert_architecture_supported(cfg: ModelConfig) -> None:
+    """Fail early, and actionably, when transformers cannot build the model.
+
+    ``model_type`` is dispatched by transformers itself. A checkpoint newer than
+    the installed release therefore fails with a message that reads like a
+    corrupt download -- "does not recognize this architecture" -- which sends
+    people to inspect the checkpoint and to try load flags that cannot help.
+    Catch that case up front and name the lever that actually fixes it.
+    """
+    model_type = read_model_type(cfg.path)
+    if model_type is None:
+        return
+
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+
+    if model_type in CONFIG_MAPPING_NAMES:
+        return
+
+    raise UnsupportedArchitectureError(
+        f"the installed transformers ({transformers.__version__}) has no class "
+        f"for model_type {model_type!r}, which checkpoint {cfg.path!r} declares.\n"
+        f"This is a transformers-version problem, not a problem with the "
+        f"checkpoint: model_type is dispatched inside transformers, so no "
+        f"loading flag (trust_remote_code included) can work around it.\n"
+        f"Install a release that ships this architecture into the same "
+        f"environment that runs lethe:\n"
+        f"    python -m pip install -U transformers\n"
+        f"If that still leaves it unknown, either the architecture postdates the "
+        f"latest release, or that release dropped this Python version "
+        f"(transformers 5.21, for example, requires Python >= 3.11)."
+    )
+
+
 def load_model_and_tokenizer(
     cfg: ModelConfig, *, on_progress: Optional[ProgressCallback] = None
 ) -> ModelBundle:
@@ -115,6 +186,10 @@ def load_model_and_tokenizer(
     """
     dtype = resolve_dtype(cfg.dtype)
     tok_path = cfg.tokenizer_path or cfg.path
+
+    # Fail with an actionable message rather than transformers' unhelpful one
+    # when the checkpoint's architecture postdates the installed release.
+    assert_architecture_supported(cfg)
 
     emit(on_progress, "Resolving tokenizer", 0.0)
     logger.info("loading tokenizer from %s", tok_path)
