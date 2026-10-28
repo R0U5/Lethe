@@ -56,14 +56,52 @@ stack. Exotic architectures can be pinned via config (`attn_out_names`,
 
 ## Install
 
+Use a virtual environment. lethe imports torch and transformers, so a bare
+`pip install -e .` puts them into whichever interpreter happens to be first on
+your PATH — normally a global one shared with every other project on the
+machine. Any other tool that then pins a different torch or transformers
+silently breaks lethe, and lethe silently breaks it.
+
 ```bash
-pip install -e .
-# recommended: TPE optimizer (optuna) for `optimize` mode
-pip install -e ".[optimize]"
-# quantized (4/8-bit) loading of large models — CUDA only
-pip install -e ".[quantize]"
-# everything (optimizer + dataset loaders + bitsandbytes)
-pip install -e ".[all]"
+# one shot: create .venv and install torch + lethe into it
+scripts/setup-env.sh                 # POSIX   (--cpu to skip the CUDA download)
+scripts\setup-env.ps1                # Windows (-Cpu to skip the CUDA download)
+
+# or by hand
+python -m venv .venv
+source .venv/bin/activate            # .\.venv\Scripts\Activate.ps1 on Windows
+pip install -e ".[dev]"
+```
+
+Extras:
+
+```bash
+pip install -e ".[optimize]"    # TPE optimizer (optuna) for `optimize` mode
+pip install -e ".[quantize]"    # 4/8-bit loading of large models — CUDA only
+pip install -e ".[all]"         # optimizer + dataset loaders + bitsandbytes
+```
+
+### Which transformers?
+
+leth supports both the 4.x and 5.x lines, but a checkpoint is only loadable once
+transformers ships a class for its architecture: a checkpoint's `model_type` is
+dispatched *inside* transformers, so no loading flag (not even
+`trust_remote_code`) can substitute for a release that does not know it. The
+setup scripts install a spec that covers current models.
+
+| checkpoint | needs | why |
+| --- | --- | --- |
+| Llama / Qwen2 / Qwen2.5 / Mistral / Gemma / Phi | any supported release | |
+| Qwen3.5 and its siblings (`qwen3_5`) | `transformers>=5.2` | `qwen3_5` first appears in 5.2 |
+| — | `transformers<5.21` on Python 3.10 | 5.21 requires Python >= 3.11 |
+
+If a load fails with an unrecognized architecture, lethe reports the offending
+`model_type` and what to do about it rather than leaving you to guess
+(see `abliterate.model_utils.UnsupportedArchitectureError`). The upgrade has to
+happen inside the venv that runs lethe:
+
+```bash
+python -m pip install -U transformers
 ```
 
 To bake a permanent standalone model you need a floating-point (fp16/bf16/fp32)
@@ -353,6 +391,9 @@ end-to-end (weighted) orthogonalization run on a tiny in-memory model.
 - **Architecture didn't match?** If a command reports only one matrix modified,
   the residual-write projections weren't found — set `attn_out_names` /
   `mlp_out_names` in the model config.
+- **"Does not recognize this architecture"?** That is a transformers-version
+  problem, not a bad checkpoint — see [Which transformers?](#which-transformers)
+  above. lethe names the `model_type` and the fix when it can read the config.
 
 ## Method & references
 
