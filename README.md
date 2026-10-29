@@ -119,8 +119,23 @@ No flags to learn. Launch the built-in local app (zero extra dependencies):
 
 
 ```bash
-abliterate ui
+# A launcher that always uses this project's .venv:
+scripts\run-ui.cmd                 # Windows (double-clickable)
+scripts/run-ui.sh                  # POSIX
+
+# `abliterate ui` works too, but only when the venv is the active interpreter:
+.\.venv\Scripts\Activate.ps1 && abliterate ui      # PowerShell
+source .venv/bin/activate && abliterate ui         # POSIX
 ```
+
+> **Why the launcher exists.** `abliterate ui` runs on whichever Python is
+> first on your PATH, and a bare `pip install -e .` also installs an
+> `abliterate` launcher into a *global* interpreter. That older copy wins, so
+> the UI serves happily with a transformers that does not know your model —
+> and you only find out when a load fails, from a different shell, for what
+> looks like a different reason. Both launchers name the interpreter explicitly
+> (and run `setup-env` first if `.venv` is missing). The UI also prints the
+> python / transformers / torch it is serving with, so the answer is on screen.
 
 It opens `http://127.0.0.1:7860` in your browser. Paste a model name or folder,
 pick **Quick / Balanced / Thorough**, and click **Remove refusals**. You'll see

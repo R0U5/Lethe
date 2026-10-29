@@ -361,12 +361,53 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
 
+def _report_environment() -> None:
+    """Print which interpreter is serving, and what it can load.
+
+    The UI runs on whichever Python launched it, and a machine can easily hold
+    several -- so "which transformers am I actually running?" is otherwise only
+    answered by a model load that fails later, from a different shell, for a
+    different reason. Stating it up front makes it a fact you can read.
+    """
+    import sys
+
+    try:
+        import transformers
+
+        tf = transformers.__version__
+    except Exception:
+        tf = "MISSING"
+    try:
+        import torch
+
+        torch_version = f"{torch.__version__} [{'cuda' if torch.cuda.is_available() else 'cpu'}]"
+    except Exception:
+        torch_version = "MISSING"
+
+    python_version = sys.version.split()[0]
+    print(
+        "  python        "
+        f"{python_version}\n"
+        "  transformers  "
+        f"{tf}\n"
+        "  torch         "
+        f"{torch_version}\n"
+        "  interpreter   "
+        f"{sys.executable}\n"
+    )
+    logger.info(
+        "UI environment: python=%s transformers=%s torch=%s exe=%s",
+        python_version, tf, torch_version, sys.executable,
+    )
+
+
 def launch(host: str = "127.0.0.1", port: int = 7860, open_browser: bool = True) -> None:
     """Start the web UI server (blocks until Ctrl-C)."""
     server = ThreadingHTTPServer((host, port), _Handler)
     url = f"http://{host}:{port}"
     logger.info("abliterate UI running at %s  (Ctrl-C to stop)", url)
     print(f"\n  Abliterate UI is live:  {url}\n")
+    _report_environment()
     if open_browser:
         try:
             webbrowser.open(url)
