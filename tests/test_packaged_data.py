@@ -15,7 +15,15 @@ def test_default_prompts_in_installed_package_layout(tmp_path):
 
     script = """
 import sys
+import importlib.util
 sys.path.insert(0, sys.argv[1])
+# Import just the data submodule so this packaging test does not need to load
+# the package's heavyweight model dependencies in its isolated subprocess.
+spec = importlib.util.spec_from_file_location(
+    "abliterate", sys.argv[1] + "/abliterate/__init__.py"
+)
+package = importlib.util.module_from_spec(spec)
+sys.modules["abliterate"] = package
 from abliterate.data import load_prompts
 for filename in ("harmful.txt", "harmless.txt"):
     prompts = load_prompts(None, default_file=filename)
