@@ -156,7 +156,7 @@ def assert_architecture_supported(cfg: ModelConfig) -> None:
     if model_type in CONFIG_MAPPING_NAMES:
         return
 
-    raise UnsupportedArchitectureError(
+    message = (
         f"the installed transformers ({transformers.__version__}) has no class "
         f"for model_type {model_type!r}, which checkpoint {cfg.path!r} declares.\n"
         f"This is a transformers-version problem, not a problem with the "
@@ -169,6 +169,15 @@ def assert_architecture_supported(cfg: ModelConfig) -> None:
         f"latest release, or that release dropped this Python version "
         f"(transformers 5.21, for example, requires Python >= 3.11)."
     )
+    # transformers' dispatch is per-environment, so say which interpreter this
+    # error was read on whenever it is not the .venv lethe is set up for
+    # (see abliterate.env).
+    from .env import environment_note
+
+    note = environment_note()
+    if note:
+        message += "\n\n" + note
+    raise UnsupportedArchitectureError(message)
 
 
 def load_model_and_tokenizer(

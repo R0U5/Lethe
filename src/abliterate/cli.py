@@ -138,7 +138,7 @@ def build_config(args: argparse.Namespace) -> Config:
     if getattr(args, "opt_seed", None) is not None:
         o.seed = args.opt_seed
     # Output
-    if getattr(args, "output", None):
+    if getattr(args, "output", None) is not None:
         cfg.output_dir = args.output
     return cfg
 
@@ -321,6 +321,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    # Env bootstrap before anything else: it must stay cheap (os/sys/pathlib
+    # only, never torch) because this far in, the interpreter's site-packages
+    # can still be the wrong ones.
+    from .env import bootstrap
+
+    bootstrap(argv)  # may relaunch this CLI on the project .venv interpreter
+
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(
