@@ -119,23 +119,28 @@ No flags to learn. Launch the built-in local app (zero extra dependencies):
 
 
 ```bash
-# A launcher that always uses this project's .venv:
+# A launcher that always uses this project's .venv (and completes a half-built
+# one by re-running setup):
 scripts\run-ui.cmd                 # Windows (double-clickable)
 scripts/run-ui.sh                  # POSIX
 
-# `abliterate ui` works too, but only when the venv is the active interpreter:
-.\.venv\Scripts\Activate.ps1 && abliterate ui      # PowerShell
-source .venv/bin/activate && abliterate ui         # POSIX
+# Or plain `abliterate ui`, from any shell: the CLI notices it is not running
+# on the project .venv, and relaunches itself there with all arguments intact.
+abliterate ui
 ```
 
-> **Why the launcher exists.** `abliterate ui` runs on whichever Python is
-> first on your PATH, and a bare `pip install -e .` also installs an
-> `abliterate` launcher into a *global* interpreter. That older copy wins, so
-> the UI serves happily with a transformers that does not know your model —
-> and you only find out when a load fails, from a different shell, for what
-> looks like a different reason. Both launchers name the interpreter explicitly
-> (and run `setup-env` first if `.venv` is missing). The UI also prints the
-> python / transformers / torch it is serving with, so the answer is on screen.
+> **Environment hand-off.** pip console scripts embed the interpreter they were
+> built with, so an `abliterate` installed into a *global* site-packages keeps
+> running there no matter what `setup-env` built next to the source — and a
+> transformers that does not know your model is only discovered when a load
+> fails, from a different shell, for what looks like a different reason. The CLI
+> now checks at startup (see `abliterate.env`): running on the project `.venv`,
+> it verifies the venv is complete (a cancelled torch download otherwise
+> surfaces later as a bare `ModuleNotFoundError`); inside an env you activated
+> yourself (`VIRTUAL_ENV` set) it stays out of the way; anywhere else it
+> relaunches on the `.venv` interpreter, forwarding arguments and exit codes.
+> Set `ABLitERATE_NO_BOOTSTRAP=1` to opt out. The UI also prints the python /
+> transformers / torch it is serving with, so the answer is on screen.
 
 It opens `http://127.0.0.1:7860` in your browser. Paste a model name or folder,
 pick **Quick / Balanced / Thorough**, and click **Remove refusals**. You'll see

@@ -20,6 +20,10 @@ if not exist ".venv\Scripts\python.exe" (
     echo No .venv yet - creating it first ^(one time, downloads torch^)...
     powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%setup-env.ps1"
     if errorlevel 1 goto setupfailed
+) else if not exist ".venv\Lib\site-packages\torch-*.dist-info" (
+    echo .venv exists but is incomplete ^(no torch record^). Completing setup...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%setup-env.ps1"
+    if errorlevel 1 goto setupfailed
 )
 
 ".venv\Scripts\python.exe" -m abliterate.cli ui %*

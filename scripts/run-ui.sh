@@ -20,6 +20,9 @@ cd "$ROOT"
 if [ ! -x ".venv/bin/python" ]; then
     echo "No .venv yet - creating it first (one time, downloads torch)..."
     ./scripts/setup-env.sh
+elif ! compgen -G ".venv/lib/python*/site-packages/torch-*.dist-info" > /dev/null; then
+    echo ".venv exists but is incomplete (no torch record). Completing setup..."
+    ./scripts/setup-env.sh
 fi
 
 exec .venv/bin/python -m abliterate.cli ui "$@"
