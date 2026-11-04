@@ -3,7 +3,7 @@
 A "source" is one of:
     * a path to a newline-delimited text file ('#' comments and blanks ignored),
     * a built-in name ("advbench", "alpaca") loaded via the `datasets` library, or
-    * ``None``, which falls back to the packaged sample files under data/.
+    * ``None``, which falls back to the packaged sample prompt files.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from __future__ import annotations
 import logging
 import random
 from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("abliterate")
 
@@ -33,7 +33,7 @@ _KNOWN = {
 }
 
 
-def load_prompts(source: Optional[str], *, default_file: str) -> list[str]:
+def load_prompts(source: str | None, *, default_file: str) -> list[str]:
     """Return a list of prompt strings from a source (see module docstring).
 
     Results are memoized per process: repeated calls for the same source return
@@ -41,7 +41,7 @@ def load_prompts(source: Optional[str], *, default_file: str) -> list[str]:
     """
     if source is None:
         path = _packaged_data_path(default_file)
-        return _cached(("file", str(path.resolve())), lambda: _read_text_file(path))
+        return _cached(("package", str(path)), lambda: _read_text_file(path))
 
     # Accept os.PathLike as well as str: the branch below wraps the source in Path(),
     # so a Path argument is clearly intended to work, but it crashed on .lower()
@@ -85,9 +85,9 @@ def sample_prompts(prompts: list[str], n: int, seed: int) -> list[str]:
     return rng.sample(prompts, n)
 
 
-def _read_text_file(path: Path) -> list[str]:
+def _read_text_file(path: Path | Traversable) -> list[str]:
     lines: list[str] = []
-    with open(path, "r", encoding="utf-8") as fh:
+    with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
@@ -98,22 +98,11 @@ def _read_text_file(path: Path) -> list[str]:
     return lines
 
 
-def _packaged_data_path(filename: str) -> Path:
-    """Locate a file shipped in the repo-level data/ directory.
-
-    Works both from a source checkout and, best-effort, an installed package.
-    """
-    # Source checkout: <repo>/data/<filename> (this file is src/abliterate/).
-    candidate = Path(__file__).resolve().parents[2] / "data" / filename
-    if candidate.exists():
-        return candidate
-    # Installed layout fallback.
-    try:
-        res = resources.files("abliterate").joinpath("data", filename)
-        if res.is_file():
-            return Path(str(res))
-    except (ModuleNotFoundError, AttributeError):
-        pass
+def _packaged_data_path(filename: str) -> Traversable:
+    """Locate sample prompts in both source checkouts and installed packages."""
+    res = resources.files("abliterate").joinpath("sample_data", filename)
+    if res.is_file():
+        return res
     raise FileNotFoundError(
         f"packaged sample data {filename!r} not found; pass an explicit source"
     )
