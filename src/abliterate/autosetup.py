@@ -288,20 +288,18 @@ class Calibration:
     truncated_rate: float
     seconds: float
     n_prompts: int
+    #: How many tokens each probe completion actually produced (pads trimmed).
+    lengths: list[int] = field(default_factory=list)
+    #: True when completions were still running at the probing cap itself --
+    #: the model never finished, so the budget is a clamp, not a measurement.
+    never_finishes: bool = False
 
     @property
     def tokens_per_second(self) -> float:
-        """Generation speed from the probe, or 0 when it cannot be trusted.
-
-        The probe only knows how many tokens the budget *allowed*; when most
-        completions finished early the generated count is far lower, so the
-        estimate would flatter the machine. Only a probe dominated by
-        truncations (where completions really did run the full budget) yields
-        a believable rate.
-        """
-        if self.seconds <= 0 or self.truncated_rate < 0.5:
+        """Generation speed, from tokens actually produced in the probe."""
+        if self.seconds <= 0 or not self.lengths:
             return 0.0
-        return self.n_prompts * self.budget / self.seconds
+        return sum(self.lengths) / self.seconds
 
 
 def calibrate_token_budget(
@@ -312,28 +310,52 @@ def calibrate_token_budget(
     cap: int = _MAX_TOKEN_BUDGET,
     target: float = _TRUNCATION_TARGET,
 ) -> Calibration:
-    """Find the smallest standard budget where the model finishes speaking.
+    """Find a budget the model's completions actually fit inside, cheaply.
 
     Generates greedily from ``prompts`` (chat-templated, exactly like scoring)
-    and doubles the budget while too many completions are cut off. Truncated
-    completions are the ones that hide refusals, so this keeps the scorer's
-    input honest regardless of how chatty the checkpoint is.
+    and measures how many tokens each completion really produced. At most two
+    generations ever run:
+
+    1. a short probe at ``start`` -- if completions finish there, done;
+    2. only when they truncate, one probe at ``cap`` -- the actual token
+       lengths it observes set the budget (a high quantile of real completion
+       lengths), so a chatty model gets a bigger budget without paying for a
+       ladder of ever-longer re-generations.
+
+    If completions are still running at ``cap``, the model never emits an
+    end-of-sequence token. That is a checkpoint problem (common in merges,
+    which can lose a working EOS) -- the budget is clamped at ``cap`` and the
+    caller is told loudly, rather than the search silently scoring 512-token
+    fragments.
     """
-    from .evaluate import generate_completions_with_stats
+    from .evaluate import generate_completion_rows
 
     probe = list(prompts)[:_PROBE_PROMPTS]
     if not probe:
         return Calibration(start, 0.0, 0.0, 0)
-    budget = start
-    while True:
-        t0 = time.perf_counter()
-        _, truncated = generate_completions_with_stats(
-            bundle, probe, max_new_tokens=budget, batch_size=len(probe))
-        seconds = time.perf_counter() - t0
-        rate = sum(truncated) / len(truncated)
-        if rate <= target or budget >= cap:
-            return Calibration(budget, rate, seconds, len(probe))
-        budget = min(cap, budget * 2)
+
+    t0 = time.perf_counter()
+    _completions, truncated, lengths = generate_completion_rows(
+        bundle, probe, max_new_tokens=start, batch_size=len(probe))
+    seconds = time.perf_counter() - t0
+    rate = sum(truncated) / len(truncated)
+    if rate <= target:
+        return Calibration(start, rate, seconds, len(probe), lengths)
+
+    # Truncating at the short probe: one long probe at the cap tells us both
+    # the real completion lengths and the true generation speed.
+    t0 = time.perf_counter()
+    _completions, truncated, lengths = generate_completion_rows(
+        bundle, probe, max_new_tokens=cap, batch_size=len(probe))
+    seconds = time.perf_counter() - t0
+    rate = sum(truncated) / len(truncated)
+    if rate > target:
+        return Calibration(cap, rate, seconds, len(probe), lengths, never_finishes=True)
+
+    ordered = sorted(lengths)
+    p90 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.9))]
+    budget = min(cap, max(start, p90 + 8))  # +8: a little room past the tail
+    return Calibration(budget, rate, seconds, len(probe), lengths)
 
 
 def scale_trials(
@@ -357,10 +379,12 @@ def scale_trials(
             f"{target * seconds_per_trial / 60:.0f} min; keeping the search "
             f"under ~{time_budget_minutes:.0f} min")
     if fit < _MIN_TRIALS <= target:
+        total_min = _MIN_TRIALS * seconds_per_trial / 60
         notes.append(
-            "this machine is very slow for this model; the search keeps a "
-            f"floor of {_MIN_TRIALS} trials "
-            f"(~{_MIN_TRIALS * seconds_per_trial / 60:.0f} min)")
+            f"at ~{tps:.0f} tokens/s even the floor of {_MIN_TRIALS} trials "
+            f"takes about {total_min:.0f} min on this machine. If that is too "
+            "long, load the model in 4-bit (needs bitsandbytes) or use a "
+            "smaller model -- the ablation math itself is unchanged.")
     return fitted, notes
 
 
@@ -404,11 +428,20 @@ def auto_fit_runtime(
     o._auto_calibration = calib  # noqa: SLF001 - deliberate cache
     o.max_new_tokens = calib.budget
     report.decisions["max_new_tokens"] = calib.budget
-    if calib.truncated_rate > _TRUNCATION_TARGET:
+    if calib.never_finishes:
+        report.decisions["eos_observed"] = False
         report.notes.append(
-            f"generation budget raised to {calib.budget} tokens: the probe "
-            f"was {100 * calib.truncated_rate:.0f}% truncated at "
-            f"{_TOKEN_BUDGET_START}, which hides refusals from the scorer")
+            f"WARNING: the model did not finish any probe completion within "
+            f"{calib.budget} tokens. It may be missing a working end-of-"
+            "sequence token (common in merged checkpoints) or simply very "
+            f"chatty; scoring is clamped at {calib.budget} tokens and both "
+            "refusal rates and run time will suffer. Try chatting with the "
+            "original model to check whether it ever stops on its own.")
+    elif calib.truncated_rate > _TRUNCATION_TARGET:
+        report.notes.append(
+            f"generation budget raised to {calib.budget} tokens: the short "
+            "probe truncated, which hides refusals from the scorer; the "
+            "budget now covers the probe's real completion lengths")
     else:
         report.notes.append(
             f"generation budget set to {calib.budget} tokens (probe "

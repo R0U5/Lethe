@@ -198,6 +198,15 @@ def _run_job(job: Job, params: dict) -> None:
         if auto:
             from .autosetup import auto_fit_runtime
 
+            # The runtime fit probes the model with real generations, which on
+            # a CPU-offloaded model can take minutes -- show that it is working,
+            # not frozen.
+            set_phase(
+                "Measuring how the model responds "
+                "(a quick probe to size the generation budget)",
+                None,
+                indeterminate=True,
+            )
             for note in auto_fit_runtime(
                 cfg, bundle, level=params.get("thoroughness", "balanced")
             ).notes:
