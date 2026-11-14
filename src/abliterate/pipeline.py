@@ -227,6 +227,7 @@ def optimize_and_apply(
     on_trial=None,
     on_progress: Optional[ProgressCallback] = None,
     save: str = "model",
+    auto: bool = False,
 ) -> Path:
     """Optimized abliteration: search params (refusals + KL), apply best, save.
 
