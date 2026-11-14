@@ -31,7 +31,8 @@ def test_worker_emits_many_distinct_phases(monkeypatch, tmp_path):
     def fake_is_refusal(text):
         return True
 
-    def fake_optimize(cfg, bundle=None, *, on_trial=None, on_progress=None, save="model"):
+    def fake_optimize(cfg, bundle=None, *, on_trial=None, on_progress=None,
+                      save="model", auto=False):
         if on_progress is not None:
             on_progress("Preparing prompts", 0.0)
             on_progress("Collecting harmful activations", 0.0)
@@ -43,6 +44,14 @@ def test_worker_emits_many_distinct_phases(monkeypatch, tmp_path):
             on_trial(1, 2)
             on_trial(2, 2)
         return tmp_path
+
+    from abliterate.autosetup import AutoReport
+
+    # The auto planners are part of the worker now; they must not touch the
+    # fake bundle in a test about progress plumbing.
+    monkeypatch.setattr("abliterate.autosetup.apply_precision", lambda cfg: AutoReport())
+    monkeypatch.setattr("abliterate.autosetup.auto_fit_runtime",
+                        lambda cfg, bundle, **kw: AutoReport())
 
     monkeypatch.setattr("abliterate.model_utils.load_model_and_tokenizer", fake_load)
     monkeypatch.setattr("abliterate.evaluate.generate_completions", fake_generate)

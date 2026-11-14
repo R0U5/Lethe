@@ -29,7 +29,12 @@ import torch
 from .ablation import AblationParams, LayerWeightKernel, WeightedAblationHooks
 from .config import ModelConfig, OptimizeConfig
 from .directions import RefusalDirections
-from .evaluate import degenerate_rate, generate_completions, not_compliant_rate, refusal_rate
+from .evaluate import (
+    degenerate_rate,
+    generate_completions,
+    not_compliant_rate_layered as not_compliant_rate,
+    refusal_rate_layered as refusal_rate,
+)
 from .metrics import kl_divergence, next_token_logprobs
 from .model_utils import ModelBundle
 from .progress import ProgressCallback, emit

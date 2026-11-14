@@ -182,8 +182,12 @@ def cmd_run(args) -> int:
     from .pipeline import run
 
     cfg = build_config(args)
-    out = run(cfg, select=args.select, evaluate=not args.no_eval,
-              save=getattr(args, "save", "model"))
+    # --auto is the set-and-forget path: it plans precision, prompt split,
+    # generation budget and trials, which only the optimizer consumes.
+    select = "optimize" if getattr(args, "auto", False) else args.select
+    out = run(cfg, select=select, evaluate=not args.no_eval,
+              save=getattr(args, "save", "model"),
+              auto=getattr(args, "auto", False))
     print(f"done -> {out}")
     return 0
 
@@ -192,7 +196,8 @@ def cmd_optimize(args) -> int:
     from .pipeline import optimize_and_apply
 
     cfg = build_config(args)
-    out = optimize_and_apply(cfg, save=args.save)
+    out = optimize_and_apply(cfg, save=args.save,
+                             auto=getattr(args, "auto", False))
     kind = "bundle" if args.save == "bundle" else "model"
     print(f"optimized abliteration ({kind}) saved -> {out}")
     return 0
@@ -287,6 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--save", choices=["model", "bundle", "both"], default="model",
                        help="save a full model, a tiny runtime bundle, or both")
     _add_optimize_args(p_run)
+    p_run.add_argument("--auto", action="store_true",
+                       help="set-and-forget: plan precision, prompt split, generation "
+                            "budget and trial count from this machine (implies "
+                            "--select optimize)")
     p_run.set_defaults(func=cmd_run)
 
     p_opt = sub.add_parser("optimize", help="automated abliteration: co-minimize refusals + KL")
@@ -296,6 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_opt.add_argument("--save", choices=["model", "bundle", "both"], default="model",
                        help="save a full model, a tiny runtime bundle, or both "
                             "(quantized models force 'bundle')")
+    p_opt.add_argument("--auto", action="store_true",
+                       help="set-and-forget: plan precision, prompt split, generation "
+                            "budget and trial count from this machine")
     p_opt.set_defaults(func=cmd_optimize)
 
     p_ab = sub.add_parser("apply-bundle", help="bake a saved bundle into a full-precision model")
