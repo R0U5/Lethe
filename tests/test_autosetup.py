@@ -93,65 +93,104 @@ def test_data_plan_upgrades_a_too_small_file_to_the_builtin_dataset(tmp_path, mo
 # --------------------------------------------------------------------------- #
 # Token budget + trials
 # --------------------------------------------------------------------------- #
-def test_calibration_doubles_until_truncation_drops(monkeypatch):
-    """A model that truncates everything at 48 tokens gets a bigger budget."""
-    rates = {48: 1.0, 96: 1.0, 192: 0.0}
+def test_calibration_never_re_generates_a_ladder(monkeypatch):
+    """A truncating model gets exactly TWO probes, not a doubling ladder.
+
+    Regression: the first version re-generated the whole probe at 48, 96, 192,
+    384, 512... on a CPU-offloaded model each step cost twice the last, and the
+    run looked hung. The budget must come from at most two generations.
+    """
     seen = []
 
     def fake_generate(bundle, prompts, *, max_new_tokens, batch_size):
         seen.append(max_new_tokens)
-        return ["x" * 10] * len(prompts), [rates[max_new_tokens]] * len(prompts)
+        # Truncates at 48; at the cap the model finishes around 120 tokens.
+        if max_new_tokens == 48:
+            lengths = [48] * len(prompts)
+            truncated = [True] * len(prompts)
+        else:
+            lengths = [120] * len(prompts)
+            truncated = [False] * len(prompts)
+        return ["x" * 10] * len(prompts), truncated, lengths
 
     monkeypatch.setattr(
-        "abliterate.evaluate.generate_completions_with_stats", fake_generate)
+        "abliterate.evaluate.generate_completion_rows", fake_generate)
 
     calib = autosetup.calibrate_token_budget(object(), [f"p{i}" for i in range(4)])
 
-    assert seen == [48, 96, 192]
-    assert calib.budget == 192
+    assert seen == [autosetup._TOKEN_BUDGET_START, autosetup._MAX_TOKEN_BUDGET]
+    # The budget covers the observed real completion lengths (+ a small tail).
+    assert calib.budget == 128
     assert calib.truncated_rate == 0.0
+    assert calib.never_finishes is False
 
 
 def test_calibration_stops_immediately_for_a_well_behaved_model(monkeypatch):
     def fake_generate(bundle, prompts, *, max_new_tokens, batch_size):
-        return ["done"] * len(prompts), [False] * len(prompts)
+        return ["done"] * len(prompts), [False] * len(prompts), [24] * len(prompts)
 
     monkeypatch.setattr(
-        "abliterate.evaluate.generate_completions_with_stats", fake_generate)
+        "abliterate.evaluate.generate_completion_rows", fake_generate)
 
     calib = autosetup.calibrate_token_budget(object(), [f"p{i}" for i in range(4)])
 
     assert calib.budget == autosetup._TOKEN_BUDGET_START
+    assert calib.tokens_per_second > 0
 
 
-def test_speed_is_only_trusted_from_a_truncation_dominated_probe():
-    """A probe whose completions finish early under-reports generated tokens.
+def test_model_that_never_finishes_is_flagged_and_clamped(monkeypatch):
+    """Still truncating at the cap means a checkpoint problem, not a budget one.
 
-    Trusting it would flatter the machine and over-fit the trial count.
+    Merged checkpoints can lose a working end-of-sequence token. The budget is
+    clamped at the cap and ``never_finishes`` says so, instead of silently
+    scoring 512-token fragments.
     """
-    finished = Calibration(budget=48, truncated_rate=0.0, seconds=1.0, n_prompts=6)
-    truncated = Calibration(budget=48, truncated_rate=1.0, seconds=6.0, n_prompts=6)
-    assert finished.tokens_per_second == 0.0
+    def fake_generate(bundle, prompts, *, max_new_tokens, batch_size):
+        n = max_new_tokens
+        return ["x" * 10] * len(prompts), [True] * len(prompts), [n] * len(prompts)
+
+    monkeypatch.setattr(
+        "abliterate.evaluate.generate_completion_rows", fake_generate)
+
+    calib = autosetup.calibrate_token_budget(object(), [f"p{i}" for i in range(4)])
+
+    assert calib.budget == autosetup._MAX_TOKEN_BUDGET
+    assert calib.never_finishes is True
+    assert calib.truncated_rate == pytest.approx(1.0)
+
+
+def test_speed_comes_from_tokens_actually_produced():
+    """The probe now observes real completion lengths, whatever they are."""
+    finished = Calibration(budget=48, truncated_rate=0.0, seconds=1.0,
+                           n_prompts=6, lengths=[30, 30, 30, 30, 30, 30])
+    truncated = Calibration(budget=48, truncated_rate=1.0, seconds=6.0,
+                            n_prompts=6, lengths=[48] * 6)
+    assert finished.tokens_per_second == pytest.approx(180.0)
     assert truncated.tokens_per_second == pytest.approx(48.0)
 
 
 def test_trials_bend_to_the_measured_speed_and_wall_clock_budget():
-    # 48 tokens/s measured; 40 eval prompts x 96-token budget x 1.6 overhead
+    # 96 tokens/s measured; 40 eval prompts x 96-token budget x 1.6 overhead
     # = ~64 s per trial. A 20-minute quick budget fits ~18 trials.
-    calib = Calibration(budget=96, truncated_rate=1.0, seconds=6.0, n_prompts=6)
+    calib = Calibration(budget=96, truncated_rate=1.0, seconds=6.0, n_prompts=6,
+                        lengths=[96] * 6)
     fitted, notes = scale_trials(150, calib, n_eval=40, time_budget_minutes=20)
     assert fitted == 18
     assert notes and "trials 150 -> 18" in notes[0]
 
 
 def test_trials_keep_a_floor_on_very_slow_machines():
-    calib = Calibration(budget=512, truncated_rate=1.0, seconds=600.0, n_prompts=6)
+    # ~5 tokens/s: a 48-prompt, 512-token trial would take over two hours.
+    calib = Calibration(budget=512, truncated_rate=1.0, seconds=600.0, n_prompts=6,
+                        lengths=[512] * 6)
     fitted, notes = scale_trials(150, calib, n_eval=48, time_budget_minutes=20)
     assert fitted == autosetup._MIN_TRIALS
     assert any("floor" in n for n in notes)
+    # And the note names the lever that actually fixes the speed problem.
+    assert any("bitsandbytes" in n for n in notes)
 
 
-def test_trials_untouched_without_a_trusted_measurement():
+def test_trials_untouched_without_a_measurement():
     calib = Calibration(budget=48, truncated_rate=0.0, seconds=1.0, n_prompts=6)
     fitted, notes = scale_trials(60, calib, n_eval=32, time_budget_minutes=20)
     assert fitted == 60
@@ -170,7 +209,8 @@ def test_auto_fit_runtime_is_idempotent(monkeypatch, tmp_path):
         autosetup, "calibrate_token_budget",
         lambda bundle, prompts, **kw: (
             calls.append(1),
-            Calibration(budget=96, truncated_rate=1.0, seconds=6.0, n_prompts=6),
+            Calibration(budget=96, truncated_rate=1.0, seconds=6.0, n_prompts=6,
+                        lengths=[96] * 6),
         )[1],
     )
 
@@ -181,6 +221,26 @@ def test_auto_fit_runtime_is_idempotent(monkeypatch, tmp_path):
     assert first is second
     assert cfg.optimize.max_new_tokens == 96
     assert cfg.optimize.n_trials < 150, "quick's 20-minute budget trims the preset"
+
+
+def test_auto_fit_runtime_diagnoses_a_model_that_never_finishes(monkeypatch, tmp_path):
+    """A missing EOS must be reported loudly, not silently scored at the cap."""
+    _make_prompt_file(tmp_path, "harmful.txt", 160)
+    _make_prompt_file(tmp_path, "harmless.txt", 156)
+    cfg = _config(tmp_path, n_samples=160, n_eval_harmful=48, n_eval_harmless=48)
+
+    monkeypatch.setattr(
+        autosetup, "calibrate_token_budget",
+        lambda bundle, prompts, **kw: Calibration(
+            budget=512, truncated_rate=1.0, seconds=6.0, n_prompts=6,
+            lengths=[512] * 6, never_finishes=True),
+    )
+
+    report = autosetup.auto_fit_runtime(cfg, object())
+
+    assert any("did not finish" in n for n in report.notes)
+    assert report.decisions["eos_observed"] is False
+    assert cfg.optimize.max_new_tokens == 512
 
 
 # --------------------------------------------------------------------------- #

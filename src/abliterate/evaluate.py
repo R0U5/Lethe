@@ -331,6 +331,87 @@ def is_degenerate(text: str) -> bool:
     return False
 
 
+def _generate_rows(
+    bundle: ModelBundle,
+    prompts: list[str],
+    *,
+    max_new_tokens: int,
+    batch_size: int,
+    system: Optional[str] = None,
+    do_sample: bool = False,
+) -> list[list[int]]:
+    """Generate one completion per prompt; return each row's new-token ids.
+
+    Padding tokens are trimmed from the right, so ``len(row)`` is the number of
+    tokens the model actually produced -- the raw material for both truncation
+    detection (``generate_completions_with_stats``) and completion-length
+    measurement (``generate_completion_rows``).
+    """
+    model = bundle.model
+    tokenizer = bundle.tokenizer
+    device = next(model.parameters()).device
+    pad_id = tokenizer.pad_token_id
+
+    rows: list[list[int]] = []
+    for start in tqdm(range(0, len(prompts), batch_size), desc="generate"):
+        batch = prompts[start : start + batch_size]
+        rendered = format_batch(tokenizer, batch, system=system)
+        enc = tokenizer(
+            rendered,
+            return_tensors="pt",
+            padding=True,
+            add_special_tokens=not bool(getattr(tokenizer, "chat_template", None)),
+        ).to(device)
+        gen = model.generate(
+            **enc,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            pad_token_id=pad_id,
+        )
+        # Slice off the prompt; keep only newly generated tokens.
+        new_tokens = gen[:, enc["input_ids"].shape[1] :]
+        for row in new_tokens:
+            ids = row.tolist()
+            while ids and pad_id is not None and ids[-1] == pad_id:
+                ids.pop()
+            rows.append(ids)
+    return rows
+
+
+@torch.no_grad()
+def generate_completion_rows(
+    bundle: ModelBundle,
+    prompts: list[str],
+    *,
+    max_new_tokens: int = 64,
+    batch_size: int = 8,
+    system: Optional[str] = None,
+    do_sample: bool = False,
+) -> tuple[list[str], list[bool], list[int]]:
+    """Generate a completion per prompt, plus truncation flag and token length.
+
+    Same as ``generate_completions_with_stats`` but also returns how many
+    tokens each completion actually produced, so callers can measure the
+    model's real completion lengths (and generation speed) instead of only
+    knowing whether it hit the budget.
+    """
+    rows = _generate_rows(
+        bundle, prompts, max_new_tokens=max_new_tokens, batch_size=batch_size,
+        system=system, do_sample=do_sample,
+    )
+    tokenizer = bundle.tokenizer
+    eos_id = tokenizer.eos_token_id
+    truncated = [
+        bool(len(row) >= max_new_tokens and (eos_id is None or row[-1] != eos_id))
+        for row in rows
+    ]
+    completions = (
+        tokenizer.batch_decode([list(row) for row in rows], skip_special_tokens=True)
+        if rows else []
+    )
+    return completions, truncated, [len(row) for row in rows]
+
+
 @torch.no_grad()
 def generate_completions_with_stats(
     bundle: ModelBundle,
@@ -348,41 +429,19 @@ def generate_completions_with_stats(
     the budget ran out. Those completions are the ones that hide a refusal, so
     callers should treat a score derived from them as unreliable.
     """
-    model = bundle.model
+    rows = _generate_rows(
+        bundle, prompts, max_new_tokens=max_new_tokens, batch_size=batch_size,
+        system=system, do_sample=do_sample,
+    )
     tokenizer = bundle.tokenizer
-    device = next(model.parameters()).device
-    pad_id = tokenizer.pad_token_id
     eos_id = tokenizer.eos_token_id
-
-    completions: list[str] = []
-    truncated: list[bool] = []
-    for start in tqdm(range(0, len(prompts), batch_size), desc="generate"):
-        batch = prompts[start : start + batch_size]
-        rendered = format_batch(tokenizer, batch, system=system)
-        enc = tokenizer(
-            rendered,
-            return_tensors="pt",
-            padding=True,
-            add_special_tokens=not bool(getattr(tokenizer, "chat_template", None)),
-        ).to(device)
-        gen = model.generate(
-            **enc,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            pad_token_id=pad_id,
-        )
-        # Slice off the prompt; decode only newly generated tokens.
-        new_tokens = gen[:, enc["input_ids"].shape[1] :]
-        for row in new_tokens:
-            ids = row.tolist()
-            while ids and pad_id is not None and ids[-1] == pad_id:
-                ids.pop()
-            hit_cap = len(ids) >= max_new_tokens
-            ended = bool(ids) and eos_id is not None and ids[-1] == eos_id
-            truncated.append(hit_cap and not ended)
-        completions.extend(
-            tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
-        )
+    truncated = [
+        bool(len(row) >= max_new_tokens and (eos_id is None or row[-1] != eos_id))
+        for row in rows
+    ]
+    completions = tokenizer.batch_decode(
+        [list(row) for row in rows], skip_special_tokens=True
+    )
     return completions, truncated
 
 
