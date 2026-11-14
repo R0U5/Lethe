@@ -28,7 +28,7 @@ from .bundle import build_bundle
 from .config import Config
 from .data import load_prompts, sample_prompts
 from .directions import RefusalDirections, compute_refusal_directions
-from .evaluate import evaluate_refusal
+from .evaluate import evaluate_refusal, evaluate_refusal_layered
 from .metrics import kl_divergence, next_token_logprobs
 from .model_utils import (
     ModelBundle,
@@ -244,12 +244,32 @@ def optimize_and_apply(
         quantized models, which cannot be edited in place);
       * ``"both"``    -- save the model and a bundle beside it.
 
+    With ``auto=True`` the run is "set and forget": precision, prompt split,
+    generation budget and trial count are planned from the machine and the
+    checkpoint (see :mod:`abliterate.autosetup`), and each decision is logged.
+    Callers that already loaded the bundle (the UI) run the precision planner
+    themselves before loading; this function picks the decision up from the
+    config either way.
+
     In every case the in-memory model ends up behaving abliterated (via baked
     weights or attached hooks), so callers can generate from it afterwards.
     Returns the primary output path.
     """
+    report = None
+    if auto and bundle is None:
+        from .autosetup import apply_precision
+
+        report = apply_precision(cfg.model)
+
     if bundle is None:
         bundle = load_model_and_tokenizer(cfg.model)
+
+    if auto:
+        from .autosetup import auto_fit_runtime
+
+        report = auto_fit_runtime(cfg, bundle)
+        for note in report.notes:
+            logger.info("auto: %s", note)
 
     quantized = is_quantized(bundle.model)
     if quantized and save != "bundle":
@@ -281,7 +301,17 @@ def optimize_and_apply(
 
     emit(on_progress, "Measuring baseline refusals", 0.65)
     before = evaluate_refusal(bundle, harmful_eval, max_new_tokens=ocfg.max_new_tokens)
-    logger.info("refusal rate before optimization: %.1f%%", 100 * before["refusal_rate"])
+    # The optimizer scores with the LAYERED detector, so the "before" number must
+    # use it too -- comparing an openers-only baseline against a layered result
+    # would exaggerate the improvement. Record both so the gap stays visible.
+    before_layered = evaluate_refusal_layered(
+        bundle, harmful_eval, max_new_tokens=ocfg.max_new_tokens
+    )
+    logger.info(
+        "refusal rate before optimization: %.1f%% openers / %.1f%% layered (gap %.1fpp)",
+        100 * before["refusal_rate"], 100 * before_layered["refusal_rate"],
+        100 * (before_layered["refusal_rate"] - before["refusal_rate"]),
+    )
 
     best_params, history = optimize_ablation(
         bundle, directions, ocfg, harmful_eval, harmless_eval,
@@ -290,7 +320,11 @@ def optimize_and_apply(
     best_result = min(history, key=lambda r: r.cost)
 
     metrics = {
-        "refusal_rate_before": round(before["refusal_rate"], 4),
+        # Layered = the detector the optimizer scored with. Openers = the old
+        # narrow one, kept for comparison. A large gap means the model phrases
+        # refusals as declarations, which is what made the previous run report 0%.
+        "refusal_rate_before": round(before_layered["refusal_rate"], 4),
+        "refusal_rate_before_openers": round(before["refusal_rate"], 4),
         "refusal_rate_after": round(best_result.refusal_rate, 4),
         "degenerate_rate_after": round(getattr(best_result, "degenerate_rate", 0.0), 4),
         "non_compliant_rate_after": round(getattr(best_result, "non_compliant_rate", 0.0), 4),
@@ -324,6 +358,8 @@ def optimize_and_apply(
             "metrics": metrics,
             "optimize": {"n_trials": ocfg.n_trials, "kl_weight": ocfg.kl_weight},
         }
+        if report is not None and report.decisions:
+            manifest["auto"] = report.decisions
         (out / "abliteration_manifest.json").write_text(json.dumps(manifest, indent=2))
         primary = out
         if save == "both":
@@ -338,13 +374,15 @@ def optimize_and_apply(
 
 
 def run(cfg: Config, *, select: str = "config", evaluate: bool = True,
-        save: str = "model") -> Path:
+        save: str = "model", auto: bool = False) -> Path:
     """Full pipeline: directions -> select -> apply -> save (+ optional eval).
 
-    ``select="optimize"`` runs the automated search instead (Heretic-style).
+    ``select="optimize"`` runs the automated search instead (Heretic-style);
+    ``auto=True`` implies it (set-and-forget planning) when the caller passes
+    both -- see :func:`cmd_run` in the CLI.
     """
     if select == "optimize":
-        return optimize_and_apply(cfg, save=save)
+        return optimize_and_apply(cfg, save=save, auto=auto)
 
     harmful, harmless = load_contrastive_prompts(cfg)
     bundle, directions = build_directions(cfg, prompts=(harmful, harmless))

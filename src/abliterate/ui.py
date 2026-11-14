@@ -132,20 +132,26 @@ def _run_job(job: Job, params: dict) -> None:
     logger.addHandler(handler)
     try:
         preset = dict(PRESETS.get(params.get("thoroughness", "balanced"), PRESETS["balanced"]))
+        auto = bool(params.get("auto", True))
         trials = params.get("trials")
-        if trials:
+        if trials and not auto:
+            # Trials are the auto path's job to fit; an explicit override only
+            # means something in manual (power-user) mode.
             preset["n_trials"] = int(trials)
             preset["n_startup_trials"] = max(4, min(preset["n_startup_trials"], int(trials) // 3))
 
         model_path = (params.get("model") or "").strip()
         device_map = (params.get("device_map") or "auto").strip() or "auto"
-        load_in_4bit = bool(params.get("load_in_4bit", False))
+        load_in_4bit = bool(params.get("load_in_4bit", False)) and not auto
         save = "bundle" if params.get("output_format") == "bundle" else "model"
+        # In auto mode the precision planner picks the dtype before load; the
+        # value here is just the fallback when the checkpoint can't be sized.
+        dtype = "bfloat16" if auto else params.get("dtype", "bfloat16")
         cfg = Config(
             model=ModelConfig(
                 path=model_path,
                 lora_adapter=(params.get("lora") or "").strip() or None,
-                dtype=params.get("dtype", "bfloat16"),
+                dtype=dtype,
                 device_map=None if device_map.lower() in ("", "none", "cpu") else device_map,
                 trust_remote_code=bool(params.get("trust_remote_code", False)),
                 load_in_4bit=load_in_4bit,
@@ -159,6 +165,11 @@ def _run_job(job: Job, params: dict) -> None:
             ),
             output_dir=(params.get("output_dir") or "output/abliterated-model").strip(),
         )
+        if auto:
+            from .autosetup import apply_precision
+
+            for note in apply_precision(cfg.model).notes:
+                job.add_log("auto: " + note)
 
         def set_phase(text: str, progress: Optional[float] = None,
                       indeterminate: bool = False) -> None:
@@ -184,9 +195,20 @@ def _run_job(job: Job, params: dict) -> None:
         bundle = load_model_and_tokenizer(cfg.model, on_progress=on_load)
         job.set(bundle=bundle)
 
+        if auto:
+            from .autosetup import auto_fit_runtime
+
+            for note in auto_fit_runtime(
+                cfg, bundle, level=params.get("thoroughness", "balanced")
+            ).notes:
+                job.add_log("auto: " + note)
+
         demo = sample_prompts(
             load_prompts(cfg.data.harmful, default_file="harmful.txt"), 3, seed=7
         )
+        # Demos are for reading, not scoring: cap them so a long auto-calibrated
+        # budget doesn't turn three samples into a slideshow.
+        demo_budget = min(cfg.optimize.max_new_tokens, 200)
         # A single generation call has no measurable progress; show the spinner
         # so a multi-minute CPU-offloaded run reads as "working", not "hung".
         set_phase(
@@ -195,7 +217,7 @@ def _run_job(job: Job, params: dict) -> None:
             _BEFORE_BAND[0],
             indeterminate=True,
         )
-        before = generate_completions(bundle, demo, max_new_tokens=48, batch_size=len(demo))
+        before = generate_completions(bundle, demo, max_new_tokens=demo_budget, batch_size=len(demo))
         job.set(before_samples=[
             {"prompt": p, "response": _clip(c), "refused": is_refusal(c)}
             for p, c in zip(demo, before)
@@ -208,12 +230,13 @@ def _run_job(job: Job, params: dict) -> None:
         set_phase("Searching for the best settings", _TRIALS_BAND[0])
         out = optimize_and_apply(
             cfg, bundle=bundle, on_trial=on_trial, on_progress=on_warmup, save=save,
+            auto=auto,
         )
 
         # The in-memory model behaves abliterated either way (baked weights or
         # attached hooks), so 'after' samples and the try-it box work.
         set_phase("Checking the abliterated model", _AFTER_BAND[0], indeterminate=True)
-        after = generate_completions(bundle, demo, max_new_tokens=48, batch_size=len(demo))
+        after = generate_completions(bundle, demo, max_new_tokens=demo_budget, batch_size=len(demo))
         job.set(after_samples=[
             {"prompt": p, "response": _clip(c), "refused": is_refusal(c)}
             for p, c in zip(demo, after)
@@ -543,6 +566,15 @@ INDEX_HTML = r"""<!doctype html>
       <details>
         <summary>Advanced settings</summary>
         <div class="adv">
+          <div style="grid-column:1/-1">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:600">
+              <input id="autotune" type="checkbox" checked style="width:auto">
+              Auto-tune everything <span style="font-weight:400;color:var(--muted)">(recommended)</span>
+            </label>
+            <p class="hint">Decides precision, generation length, how prompts are split, and
+              how many tries to run — fitted to this machine and model. Uncheck to set
+              these yourself. Every decision is logged below while it works.</p>
+          </div>
           <div>
             <label>Save to folder</label>
             <input id="output" type="text" value="output/abliterated-model">
@@ -550,7 +582,8 @@ INDEX_HTML = r"""<!doctype html>
           <div>
             <label>Precision</label>
             <select id="dtype">
-              <option value="bfloat16">bfloat16 (recommended)</option>
+              <option value="auto">Auto (recommended)</option>
+              <option value="bfloat16">bfloat16</option>
               <option value="float16">float16</option>
               <option value="float32">float32 (CPU / most compatible)</option>
             </select>
@@ -582,7 +615,7 @@ INDEX_HTML = r"""<!doctype html>
             <label style="display:flex;align-items:center;gap:8px;font-weight:600">
               <input id="trust" type="checkbox" style="width:auto"> Trust remote code
             </label>
-            <p class="hint">Only for models that require it.</p>
+            <p class="hint">Only for models that require it. Stays yours to decide, even in auto mode.</p>
           </div>
         </div>
       </details>
@@ -627,6 +660,16 @@ INDEX_HTML = r"""<!doctype html>
 <script>
 let mode = "balanced", polling = null;
 
+const autoTune = document.getElementById("autotune");
+function syncAuto(){
+  const on = autoTune.checked;
+  // Auto mode owns these three; manual mode (power users) owns everything.
+  ["dtype","lowvram","trials"].forEach(id => document.getElementById(id).disabled = on);
+  if(on){ document.getElementById("dtype").value = "auto"; }
+  document.getElementById("trials").placeholder = on ? "chosen automatically" : "leave blank to use preset";
+}
+autoTune.onchange = syncAuto; syncAuto();
+
 document.querySelectorAll("#modes .opt").forEach(el => {
   el.onclick = () => {
     document.querySelectorAll("#modes .opt").forEach(o => o.classList.remove("sel"));
@@ -643,6 +686,7 @@ document.getElementById("go").onclick = async () => {
     model: document.getElementById("model").value,
     lora: document.getElementById("lora").value,
     thoroughness: mode,
+    auto: autoTune.checked,
     output_dir: document.getElementById("output").value,
     dtype: document.getElementById("dtype").value,
     kl_weight: document.getElementById("kl").value,

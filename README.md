@@ -22,6 +22,32 @@ less collateral damage than blanket orthogonalization.
 > red-teaming, and reducing over-refusal. You are responsible for how you use
 > the resulting weights.
 
+## Auto mode ("set and forget")
+
+In the UI, **Auto-tune everything** is on by default: enter a model path, pick a
+thoroughness level, press go. The tool then decides — and logs, in plain
+language — the settings that used to require judgment:
+
+* **Precision** — sizes the checkpoint on disk against free VRAM: full bfloat16
+  when it fits, 4-bit when it doesn't (bitsandbytes), and an honest "parts will
+  offload to CPU, this will be slow" note when neither applies. A pending LoRA
+  merge always keeps full precision (quantized weights cannot merge).
+* **Prompt split** — evaluation prompts are always held *out* of the direction
+  fit, sized to what your prompt files actually contain, so the search never
+  grades its own training data. Files too small to split fall back to the
+  built-in `advbench` / `harmless_alpaca` datasets when the `datasets` package
+  is installed.
+* **Generation budget** — `max_new_tokens` is calibrated by generating from the
+  model itself and counting truncations, so refusals can't hide past the token
+  cap and fool the scorer.
+* **Trial count** — fitted to a wall-clock budget per level (quick ≈ 20 min,
+  balanced ≈ 60 min, thorough ≈ 180 min) using the generation speed measured
+  during calibration.
+
+Uncheck **Auto-tune everything** for manual control of all of the above; the
+CLI gets the same behavior via `abliterate optimize --model ... --auto`.
+Every auto decision is recorded in the output manifest under `"auto"`.
+
 ## How it works
 
 1. **Load** the model (optionally merging a LoRA/PEFT adapter first).
