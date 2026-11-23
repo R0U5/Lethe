@@ -317,6 +317,35 @@ def _friendly_error(exc: Exception) -> str:
     return msg
 
 
+def _pick_folder() -> Optional[str]:
+    """Open a native OS folder picker and return the chosen directory, or None.
+
+    The UI server and the browser run on the same machine, so a folder chosen in
+    the server's native dialog is a real path this machine's model loader can
+    use. ``tkinter`` (stdlib) supplies the dialog; if it is unavailable (headless
+    box, missing Tcl/Tk) we return ``None`` and the caller falls back to typing
+    the path in by hand.
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:  # pragma: no cover - environment-dependent
+        return None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)  # bring the dialog to the front
+        except Exception:
+            pass
+        path = filedialog.askdirectory(title="Select the model folder to abliterate")
+        root.destroy()
+        return path or None
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        logger.warning("native folder picker unavailable: %s", exc)
+        return None
+
+
 def _start_job(params: dict) -> tuple[bool, str]:
     if JOB.state == "running":
         return False, "A job is already running. Please wait for it to finish."
@@ -389,6 +418,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Enter a prompt."}, 400)
             else:
                 self._send_json(_test_prompt(prompt))
+        elif self.path == "/api/pick-folder":
+            path = _pick_folder()
+            if path:
+                self._send_json({"ok": True, "path": path})
+            else:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "No folder chosen, or the folder picker is unavailable on this machine.",
+                    },
+                    409,
+                )
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -505,8 +546,10 @@ INDEX_HTML = r"""<!doctype html>
   button.ghost{padding:10px 14px;border:1px solid var(--line);border-radius:9px;background:var(--bg);
     color:var(--ink);font-weight:600;cursor:pointer}
   .hidden{display:none}
-  .bar{height:9px;background:var(--soft);border-radius:6px;overflow:hidden;margin:10px 0}
+  .barrow{display:flex;align-items:center;gap:10px;margin:10px 0}
+  .bar{flex:1;height:9px;background:var(--soft);border-radius:6px;overflow:hidden}
   .bar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s ease}
+  #pct{font-weight:800;min-width:36px;text-align:right;color:var(--ink)}
   /* Indeterminate: a moving sliver so the bar never looks frozen. */
   .bar.indet > i{width:35%;transition:none;animation:indet 1.2s ease-in-out infinite}
   @keyframes indet{0%{margin-left:-35%}100%{margin-left:100%}}
@@ -553,8 +596,11 @@ INDEX_HTML = r"""<!doctype html>
       <h2><span class="step">1</span>Your model</h2>
       <div class="row">
         <label>Model name or folder</label>
-        <input id="model" type="text" placeholder="e.g. Qwen/Qwen2.5-1.5B-Instruct  or  /path/to/model">
-        <p class="hint">A Hugging Face model ID, or a folder on this computer.</p>
+        <div class="pickrow" style="display:flex;gap:6px">
+          <input id="model" type="text" placeholder="e.g. Qwen/Qwen2.5-1.5B-Instruct  or  C:\models\Qwen" style="flex:1">
+          <button id="browse" class="ghost" type="button">Browse…</button>
+        </div>
+        <p class="hint">A Hugging Face model ID, or a folder on this computer. Use Browse… to pick a local folder.</p>
       </div>
       <div class="row">
         <label>LoRA adapter <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
@@ -637,7 +683,10 @@ INDEX_HTML = r"""<!doctype html>
   <div id="progress" class="card hidden">
     <h2>Working…</h2>
     <div class="phase"><span id="spin" class="spinner hidden"></span><span id="phase">Starting…</span></div>
-    <div class="bar" id="bar"><i id="fill"></i></div>
+    <div class="barrow">
+      <div class="bar" id="bar"><i id="fill"></i></div>
+      <span id="pct">0%</span>
+    </div>
     <details><summary>Show details</summary><pre class="log" id="log"></pre></details>
   </div>
 
@@ -686,6 +735,14 @@ document.querySelectorAll("#modes .opt").forEach(el => {
   };
 });
 
+document.getElementById("browse").onclick = async () => {
+  hideErr();
+  const r = await fetch("/api/pick-folder", {method:"POST"});
+  const j = await r.json();
+  if (j.ok && j.path) { document.getElementById("model").value = j.path; }
+  else { showErr(j.error || "Could not open the folder picker — type the folder path instead."); }
+};
+
 function showErr(msg){ const e=document.getElementById("err"); e.textContent=msg; e.classList.remove("hidden"); }
 function hideErr(){ document.getElementById("err").classList.add("hidden"); }
 
@@ -724,7 +781,16 @@ async function tick(){
   const indet = !!s.indeterminate;
   document.getElementById("spin").classList.toggle("hidden", !indet);
   document.getElementById("bar").classList.toggle("indet", indet);
-  if(!indet){ document.getElementById("fill").style.width = Math.round((s.progress||0)*100) + "%"; }
+  const pct = document.getElementById("pct");
+  if (!indet) {
+    const p = Math.round((s.progress||0)*100);
+    document.getElementById("fill").style.width = p + "%";
+    pct.textContent = p + "%";
+    pct.classList.remove("hidden");
+  } else {
+    pct.textContent = "";
+    pct.classList.add("hidden");
+  }
   document.getElementById("log").textContent = (s.log||[]).join("\n");
   document.getElementById("log").scrollTop = 1e9;
   if(s.state === "done"){ clearInterval(polling); renderResults(s); }
