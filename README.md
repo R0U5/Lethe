@@ -107,6 +107,25 @@ pip install -e ".[quantize]"    # 4/8-bit loading of large models — CUDA only
 pip install -e ".[all]"         # optimizer + dataset loaders + bitsandbytes
 ```
 
+### Windows double-click installer
+
+For a traditional "download and double-click" Windows installer, build `lethe-installer.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php):
+
+```bash
+iscc lethe-installer.iss
+```
+
+This produces `installer/Lethe-Setup-0.1.0.exe`, a wizard that:
+* lets you **choose the install folder**,
+* **auto-detects Python** (requires >= 3.10) and an **NVIDIA GPU** (pre-selects CUDA torch, falls back to CPU-only torch),
+* installs torch + Lethe into an isolated `.venv` next to the install folder,
+* creates **Start Menu + desktop shortcuts** to launch the web UI,
+* registers itself in **Add/Remove Programs** and uninstalls cleanly.
+
+A no-compiler alternative that runs immediately on any Windows machine is
+`scripts\setup-installer.ps1` (right-click → "Run with PowerShell"); it offers
+the same smart detection, folder picker, shortcuts, and uninstall entry.
+
 ### Which transformers?
 
 leth supports both the 4.x and 5.x lines, but a checkpoint is only loadable once
