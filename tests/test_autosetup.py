@@ -268,6 +268,12 @@ def test_4bit_when_the_model_does_not_fit_and_bitsandbytes_exists(monkeypatch):
 
     assert report.decisions["precision"] == "4bit-gpu"
     assert cfg.load_in_4bit
+    # A full-precision checkpoint must not be described as a quantized model:
+    # 4-bit here is only a load-time memory choice, and the saved artifact is
+    # a bundle because the in-memory weights cannot be written back.
+    note = next(n for n in report.notes if "4-bit" in n)
+    assert "checkpoint itself is full precision" in note
+    assert "saved as a runtime bundle" in note
 
 
 def test_lora_merge_never_gets_4bit(monkeypatch):

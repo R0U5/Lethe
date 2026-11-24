@@ -241,8 +241,9 @@ def optimize_and_apply(
 
     ``save`` selects the output:
       * ``"model"``   -- bake into weights, save a standalone HF model (default);
-      * ``"bundle"``  -- save only the tiny runtime bundle (required for
-        quantized models, which cannot be edited in place);
+      * ``"bundle"``  -- save only the tiny runtime bundle (required when the
+        weights are quantized at load time -- 4/8-bit loading or a checkpoint
+        that already ships quantized -- since those cannot be edited in place);
       * ``"both"``    -- save the model and a bundle beside it.
 
     With ``auto=True`` the run is "set and forget": precision, prompt split,
@@ -274,7 +275,16 @@ def optimize_and_apply(
 
     quantized = is_quantized(bundle.model)
     if quantized and save != "bundle":
-        logger.info("model is quantized; forcing save=bundle (weights can't be edited)")
+        if cfg.model.load_in_4bit or cfg.model.load_in_8bit:
+            loaded_as = "4-bit" if cfg.model.load_in_4bit else "8-bit"
+            logger.info(
+                "the checkpoint was loaded in %s to fit in memory, so the "
+                "in-memory weights are quantized and cannot be written back as "
+                "a full model; saving a runtime bundle instead", loaded_as)
+        else:
+            logger.info(
+                "the checkpoint ships quantized weights, which cannot be edited "
+                "in place; saving a runtime bundle instead")
         save = "bundle"
 
     ocfg = cfg.optimize

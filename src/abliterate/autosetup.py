@@ -106,13 +106,19 @@ def _gb(n: Optional[int]) -> str:
     return "unknown size" if n is None else f"{n / 2**30:.1f} GB"
 
 
-def apply_precision(cfg: "ModelConfig") -> AutoReport:
+def apply_precision(cfg: "ModelConfig", allow_4bit: bool = True) -> AutoReport:
     """Choose dtype/quantization for this machine; mutate ``cfg`` in place.
 
     Explicit user choices win: when 4/8-bit loading was requested directly the
     planner leaves the config alone. The decision is cached on
     ``cfg._auto_decisions`` so repeated calls (UI then pipeline) are no-ops and
     ``auto_fit_runtime`` can fold the decision into the run report.
+
+    Args:
+        cfg: The model config to mutate.
+        allow_4bit: If False (user left Low VRAM unchecked), never choose 4-bit
+            quantization even if it would fit better on GPU. Fall back to
+            bfloat16 with CPU offload instead.
     """
     cached = getattr(cfg, "_auto_decisions", None)
     if cached is not None:
@@ -160,28 +166,56 @@ def apply_precision(cfg: "ModelConfig") -> AutoReport:
             "full bfloat16 onto the GPU")
         return _finish("bfloat16-gpu")
 
-    # Doesn't fit whole: prefer 4-bit, unless a LoRA merge forbids it.
+    def _set_cpu_offload_with_headroom() -> AutoReport:
+        """Configure max_memory to leave ~2.5 GB VRAM for activations."""
+        headroom_gb = 2.5
+        gpu_mem_gb = max(0, vram / 2**30 - headroom_gb)
+        if gpu_mem_gb > 0:
+            cfg.max_memory = {0: f"{gpu_mem_gb:.1f}GB", "cpu": "100GB"}
+            report.notes.append(
+                f"reserving {headroom_gb} GB VRAM for activations; model weights "
+                f"limited to {gpu_mem_gb:.1f} GB on GPU, rest on CPU")
+        else:
+            cfg.max_memory = {0: "0GB", "cpu": "100GB"}
+            report.notes.append(
+                f"VRAM too tight for headroom; forcing all weights to CPU")
+        return _finish("bf16-cpu-offload")
+
+    # Model doesn't fit in VRAM:
+    # - If LoRA merge is needed: must use full precision -> CPU offload
+    # - If user disabled auto 4-bit (Low VRAM unchecked): use CPU offload instead of 4-bit
+    # - Otherwise: prefer 4-bit if bitsandbytes available
     if cfg.lora_adapter:
         report.notes.append(
             f"model is {_gb(size)} but only {_gb(vram)} VRAM is free, and "
             "merging a LoRA adapter needs full-precision weights -> parts will "
             "offload to CPU. This run will be slow.")
-        return _finish("bf16-cpu-offload")
+        return _set_cpu_offload_with_headroom()
 
+    if not allow_4bit:
+        report.notes.append(
+            f"model is {_gb(size)} but only {_gb(vram)} VRAM is free, and "
+            "automatic 4-bit is disabled (Low VRAM unchecked) -> parts will "
+            "offload to CPU. This run will be slower but keeps full precision.")
+        return _set_cpu_offload_with_headroom()
+
+    # Model doesn't fit and user still wants auto 4-bit:
     if importlib.util.find_spec("bitsandbytes") is not None:
         cfg.load_in_4bit = True
         cfg.load_in_8bit = False
         report.notes.append(
             f"model is {_gb(size)} but only {_gb(vram)} VRAM is free -> loading "
-            "4-bit so it fits on the GPU; the output will be a runtime bundle "
-            "(quantized weights cannot be edited in place)")
+            "the checkpoint in 4-bit so it fits on the GPU. The checkpoint itself "
+            "is full precision; 4-bit is only how it is loaded for this run. "
+            "Those in-memory weights are quantized and cannot be edited, so the "
+            "result is saved as a runtime bundle.")
         return _finish("4bit-gpu")
 
     report.notes.append(
         f"model is {_gb(size)} but only {_gb(vram)} VRAM is free, and "
         "bitsandbytes is not installed -> parts will offload to CPU. This run "
         "will be slow; `pip install bitsandbytes` enables automatic 4-bit.")
-    return _finish("bf16-cpu-offload")
+    return _set_cpu_offload_with_headroom()
 
 
 # --------------------------------------------------------------------------- #

@@ -49,7 +49,8 @@ def test_worker_emits_many_distinct_phases(monkeypatch, tmp_path):
 
     # The auto planners are part of the worker now; they must not touch the
     # fake bundle in a test about progress plumbing.
-    monkeypatch.setattr("abliterate.autosetup.apply_precision", lambda cfg: AutoReport())
+    monkeypatch.setattr("abliterate.autosetup.apply_precision",
+                        lambda cfg, **kw: AutoReport())
     monkeypatch.setattr("abliterate.autosetup.auto_fit_runtime",
                         lambda cfg, bundle, **kw: AutoReport())
 
@@ -78,6 +79,14 @@ def test_worker_emits_many_distinct_phases(monkeypatch, tmp_path):
     assert indeterminate_seen["value"] is True
     # Progress must end at 100%.
     assert job.progress == 1.0
+
+
+def test_manual_auto_precision_sentinel_resolves_to_bfloat16():
+    """The manual dropdown's default is "auto"; the loader rejects that name."""
+    assert ui._resolve_ui_dtype({"dtype": "auto"}, auto=False) == "bfloat16"
+    assert ui._resolve_ui_dtype({}, auto=False) == "bfloat16"
+    assert ui._resolve_ui_dtype({"dtype": "float32"}, auto=False) == "float32"
+    assert ui._resolve_ui_dtype({"dtype": "float32"}, auto=True) == "bfloat16"
 
 
 def test_ollama_style_model_id_yields_friendly_error():

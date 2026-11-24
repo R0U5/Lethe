@@ -223,6 +223,8 @@ def load_model_and_tokenizer(
         "trust_remote_code": cfg.trust_remote_code,
         _DTYPE_KWARG: dtype,
     }
+    if cfg.max_memory is not None:
+        load_kwargs["max_memory"] = cfg.max_memory
     if quant_config is not None:
         load_kwargs["quantization_config"] = quant_config
     use_local = _is_local_path(cfg.path)

@@ -33,6 +33,9 @@ class ModelConfig:
     device_map: str = "auto"         # passed to from_pretrained
     trust_remote_code: bool = False
     tokenizer_path: Optional[str] = None  # defaults to `path`
+    # Optional max_memory dict to reserve VRAM for activations (e.g.
+    # {0: "10GB", "cpu": "30GB"} on a 12GB GPU leaves 2GB headroom).
+    max_memory: Optional[dict] = None
 
     # Quantized loading (bitsandbytes; CUDA only). Lets large models fit in VRAM
     # to find the direction / run the optimizer. Quantized weights cannot be
