@@ -120,6 +120,21 @@ class _JobLogHandler(logging.Handler):
 # --------------------------------------------------------------------------- #
 # Worker
 # --------------------------------------------------------------------------- #
+def _resolve_ui_dtype(params: dict, auto: bool) -> str:
+    """Pick the dtype the worker passes to the loader.
+
+    Auto mode lets :func:`abliterate.autosetup.apply_precision` decide (the
+    value here is the fallback for checkpoints it can't size). Manual mode
+    should honor the dropdown, except that its default value is the sentinel
+    ``"auto"`` -- the planner only runs in auto mode, so map that sentinel to
+    the native bfloat16 rather than handing an invalid dtype to the loader.
+    """
+    requested = str(params.get("dtype") or "bfloat16").strip().lower()
+    if auto or requested == "auto":
+        return "bfloat16"
+    return requested
+
+
 def _run_job(job: Job, params: dict) -> None:
     """Background worker: load -> sample 'before' -> optimize -> sample 'after'."""
     from .config import Config, DataConfig, ModelConfig, OptimizeConfig
@@ -142,11 +157,17 @@ def _run_job(job: Job, params: dict) -> None:
 
         model_path = (params.get("model") or "").strip()
         device_map = (params.get("device_map") or "auto").strip() or "auto"
-        load_in_4bit = bool(params.get("load_in_4bit", False)) and not auto
+        # User's explicit Low VRAM preference; in auto mode we pass this to
+        # apply_precision so it respects the checkbox (unchecked = no 4-bit).
+        user_wants_low_vram = bool(params.get("load_in_4bit", False))
+        load_in_4bit = user_wants_low_vram and not auto
         save = "bundle" if params.get("output_format") == "bundle" else "model"
         # In auto mode the precision planner picks the dtype before load; the
         # value here is just the fallback when the checkpoint can't be sized.
-        dtype = "bfloat16" if auto else params.get("dtype", "bfloat16")
+        # Manual mode can still send the dropdown's "auto" sentinel; resolve it
+        # to the checkpoint's native bfloat16 instead of passing an invalid
+        # dtype name to load_model_and_tokenizer.
+        dtype = _resolve_ui_dtype(params, auto)
         cfg = Config(
             model=ModelConfig(
                 path=model_path,
@@ -168,7 +189,7 @@ def _run_job(job: Job, params: dict) -> None:
         if auto:
             from .autosetup import apply_precision
 
-            for note in apply_precision(cfg.model).notes:
+            for note in apply_precision(cfg.model, allow_4bit=user_wants_low_vram).notes:
                 job.add_log("auto: " + note)
 
         def set_phase(text: str, progress: Optional[float] = None,
@@ -626,7 +647,8 @@ INDEX_HTML = r"""<!doctype html>
               <input id="autotune" type="checkbox" checked style="width:auto">
               Auto-tune everything <span style="font-weight:400;color:var(--muted)">(recommended)</span>
             </label>
-            <p class="hint">Decides precision, generation length, how prompts are split, and
+            <p class="hint">Decides precision (including automatic 4-bit when the model
+              won't fit in VRAM), generation length, how prompts are split, and
               how many tries to run — fitted to this machine and model. Uncheck to set
               these yourself. Every decision is logged below while it works.</p>
           </div>

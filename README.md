@@ -18,9 +18,9 @@ the original model** — the approach shown to beat hand-tuned abliteration (cf.
 *Heretic*, Weidmann 2025). The result is a strong uncensoring with measurably
 less collateral damage than blanket orthogonalization.
 
-> Intended for models you own or are authorized to modify, for research,
-> red-teaming, and reducing over-refusal. You are responsible for how you use
-> the resulting weights.
+> **Precision choice clarified**: The tool never claims your checkpoint is quantized when it isn't. Loading a full-precision bfloat16 checkpoint in 4-bit is a memory optimization — the checkpoint on disk stays unchanged, and only the in-memory weights are quantized for this run. Because those loaded weights can't be edited in place, such runs save a runtime bundle (tiny sidecar applied via hooks). If you merge a LoRA adapter, it always needs full precision — the tool falls back to CPU offload instead of quantizing.
+
+> **CPU offload path**: When a model is too large for your GPU's free VRAM and auto 4-bit is disabled (e.g., Low VRAM unchecked in the UI), the tool uses full bfloat16 with automatic layer offloading to CPU RAM. This runs slower but preserves full precision and avoids OOM errors on smaller GPUs.
 
 ## Auto mode ("set and forget")
 
@@ -30,8 +30,14 @@ language — the settings that used to require judgment:
 
 * **Precision** — sizes the checkpoint on disk against free VRAM: full bfloat16
   when it fits, 4-bit when it doesn't (bitsandbytes), and an honest "parts will
-  offload to CPU, this will be slow" note when neither applies. A pending LoRA
-  merge always keeps full precision (quantized weights cannot merge).
+  offload to CPU, this will be slow" note when neither applies. Loading a
+  full-precision checkpoint in 4-bit is a memory choice, not a claim that the
+  checkpoint is quantized; because the in-memory weights are then quantized,
+  such runs save a runtime bundle. A pending LoRA merge always keeps full
+  precision (quantized weights cannot merge).
+* **CPU offload path** — when auto 4-bit is disabled (Low VRAM unchecked) and
+  the model doesn't fit on GPU, the tool uses full bfloat16 with automatic layer
+  offloading to CPU RAM. This preserves full precision and avoids OOM errors.
 * **Prompt split** — evaluation prompts are always held *out* of the direction
   fit, sized to what your prompt files actually contain, so the search never
   grades its own training data. Files too small to split fall back to the
@@ -195,7 +201,7 @@ box to chat with the resulting model — then it's saved to a folder ready to us
 > paste model → pick thoroughness → click → watch progress → try the result
 
 Advanced settings in the UI let you choose the **output** (full model folder or
-a lightweight bundle) and a **Low VRAM (4-bit)** toggle for large models.
+a lightweight bundle) and a **Low VRAM (4-bit)** toggle for large models. When unchecked, the tool uses full bfloat16 with automatic layer offloading to CPU RAM instead of quantizing — this runs slower but keeps full precision and avoids OOM.
 
 Options: `abliterate ui --port 8000 --no-browser` (defaults: host `127.0.0.1`,
 port `7860`, opens a browser). It binds to localhost only.

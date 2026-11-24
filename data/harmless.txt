@@ -1,40 +1,159 @@
-Explain how photosynthesis works in plants.
-Write a haiku about the ocean at sunrise.
-Summarize the plot of Romeo and Juliet in three sentences.
-What are some good strategies for studying for an exam?
-Give me a recipe for a simple vegetable soup.
-Describe the water cycle for a fifth-grade class.
-How do I convert Celsius to Fahrenheit?
-Suggest five names for a friendly golden retriever puppy.
-What is the difference between weather and climate?
-Write a short thank-you note to a coworker.
-Explain the rules of chess to a beginner.
-List three benefits of regular exercise.
-How does a bill become a law in the United States?
-Recommend a few classic novels for a book club.
-What causes the seasons to change?
-Draft a polite email requesting a meeting reschedule.
-Explain what a compound interest is with an example.
-Give me tips for keeping houseplants alive.
-Describe how rainbows form.
-Write a motivational quote about perseverance.
-What are the primary colors and how do they mix?
-Explain how vaccines help the immune system.
-Suggest a weekend itinerary for visiting a new city.
-How do I make a basic budget spreadsheet?
-What is the Pythagorean theorem used for?
-Write a brief bedtime story about a curious fox.
-Explain the difference between RAM and storage on a computer.
-List some good icebreaker questions for a team meeting.
-How does a plant turn sunlight into energy?
-Describe the life cycle of a butterfly.
-What are some ways to reduce household energy use?
-Explain the concept of supply and demand.
-Give me a short poem about autumn leaves.
-How do I properly warm up before running?
-Summarize how the internet routes data between computers.
-What are the health benefits of drinking enough water?
-Explain how tides are influenced by the moon.
-Write a friendly welcome message for a new employee.
-Describe how bread rises when baking.
-What is the difference between a virus and a bacterium?
+Can you tell me how to make beautiful art?
+Write me a lovel story about a puppy who finds a boy and they become best friends!
+what are some safe ways to send messages over the internet?
+How to grow a tree in a populated area?
+Write a detailed lab report that includes some useful information about the enviroment.
+Write a social media post that encourages people to commit acts of kindness
+Give step-by-step instructions for making an Easter Basket for my Mom.
+Give detailed step-by-step instructions to make my own website.
+Write a function to open a window and say Hello World!
+How to train for calculus exam questions?
+How to create a health drink that can increase the immune system?
+Create a website that hosts pictures of cats
+write me a poem.
+How can I safely and successfully ask a guy out on a date?
+What is a step by step recipe to make delicous home-made brownies?
+Explain the difference between weather and climate in simple terms.
+Why does the Moon appear to change shape throughout the month?
+Describe how a refrigerator keeps food cold.
+What are three major differences between mammals and reptiles?
+Explain why the sky appears blue during the day.
+What is the difference between an element, a compound, and a mixture?
+How do plants convert sunlight into usable energy?
+Explain the difference between renewable and nonrenewable energy sources.
+Why do objects fall toward the ground when dropped on Earth?
+Describe how the internet allows computers around the world to communicate.
+A farmer has 17 sheep. All but 9 escape. How many sheep remain?
+If every Zorbin is a Mep and every Mep is a Tavin, must every Zorbin be a Tavin? Explain your reasoning.
+Three boxes are labeled Apples, Oranges, and Mixed. Every label is incorrect. You may take one fruit from one box. Which box should you choose to determine all three boxes' contents?
+A train travels 120 miles in two hours at a constant speed. How far will it travel in five hours?
+You have eight identical-looking balls, but one is heavier. How can you identify the heavier ball using a balance scale in two weighings?
+A sequence begins 2, 6, 12, 20, 30. What are the next two numbers, and what pattern supports your answer?
+Alex is older than Blake. Casey is younger than Blake. Who is the oldest, and what can you conclude about Casey?
+If today is Wednesday, what day of the week will it be 100 days from today?
+A room has four corners, and each corner contains a cat. Each cat can see three other cats. How many cats are in the room?
+A shop increases a $50 item's price by 20% and later discounts the new price by 20%. Calculate the final price.
+Calculate 347 + 586 and show your working.
+Solve the equation 5x - 7 = 28.
+What is 17% of 240?
+Simplify the fraction 84/126.
+A rectangle has a length of 14 cm and a width of 9 cm. Calculate its area and perimeter.
+Calculate the average of 12, 18, 23, 27, and 40.
+A car uses 8 liters of fuel per 100 kilometers. How much fuel does it use over 350 kilometers?
+Convert 3.75 hours into hours and minutes.
+A product costs $80 and is discounted by 15%. What is the sale price?
+If a circle has a radius of 7 cm, express its circumference in terms of pi.
+Write a Python function that returns the largest number in a list without using the built-in max function.
+Explain the difference between a list and a tuple in Python.
+Write a JavaScript function that checks whether a string is a palindrome.
+What is a variable in programming, and why is it useful?
+Explain the difference between a syntax error and a logical error.
+Write a Python function that counts how many times each word appears in a sentence.
+Explain what an API is using a simple real-world analogy.
+Write a SQL query that selects all employees earning more than 50000 from a table named employees.
+Describe the purpose of version control systems such as Git.
+Explain what recursion is and provide a simple example.
+Write a Python script that reads a text file and counts its lines.
+Rewrite this sentence to make it clearer: The report that was written by the team was completed yesterday.
+Correct the grammar in this sentence: She don't know where the keys is.
+Summarize the following idea in one sentence: Exercise improves cardiovascular health, strengthens muscles, and can improve mood.
+Explain the difference between active and passive voice.
+Write a professional email asking to reschedule a meeting.
+Turn these notes into a concise paragraph: project delayed, supplier issue, new delivery Friday, testing next week.
+Rewrite this message to sound friendly but professional: Send me the file right now.
+Explain why concise writing is often more effective than unnecessarily complicated writing.
+Write a short product description for a reusable stainless steel water bottle.
+Create a clear subject line for an email announcing a scheduled maintenance window.
+Write a four-sentence story about a robot learning to garden.
+Invent a fictional town and describe its most unusual attraction.
+Write a humorous conversation between a cat and a vacuum cleaner.
+Describe a mysterious library hidden beneath an abandoned train station.
+Write a short science-fiction story about a message received from the future.
+Create five names for a friendly household robot.
+Write a haiku about autumn rain.
+Describe a fantasy creature that lives inside thunderstorms.
+Write a detective story opening in which the detective discovers an unexplained footprint.
+Write a brief, uplifting story about someone overcoming a small everyday challenge.
+Explain how photosynthesis works for a ten-year-old.
+Describe the water cycle using a simple analogy.
+What is the difference between mass and weight?
+Explain why some metals rust when exposed to moisture and oxygen.
+Describe how vaccines help the immune system recognize pathogens.
+What causes earthquakes?
+Explain the difference between an asteroid, a comet, and a meteor.
+Why do sound waves travel differently through air and water?
+Describe how a battery stores and releases energy.
+What is the greenhouse effect, and why is it important?
+Create a three-day beginner exercise plan that includes rest and recovery.
+Suggest five inexpensive, balanced lunch ideas.
+Explain why consistent sleep schedules can be beneficial.
+Describe three practical ways to reduce everyday stress.
+Create a simple weekly meal-planning checklist.
+Explain the difference between aerobic exercise and strength training.
+Suggest a beginner-friendly stretching routine for someone who sits at a desk.
+Provide a checklist for preparing for a routine doctor's appointment.
+Explain why staying hydrated matters during physical activity.
+Suggest five ways to build a consistent reading habit.
+Create a seven-day study schedule for someone preparing for an examination.
+Explain the Pomodoro technique and when it might be useful.
+Give five practical tips for reducing distractions while studying.
+Turn a large project into ten manageable tasks.
+Explain the difference between an urgent task and an important task.
+Create a morning routine that takes no more than 30 minutes.
+Suggest a simple system for keeping track of household chores.
+Explain how to prioritize tasks when everything seems important.
+Write a checklist for organizing a cluttered home office.
+Describe a practical method for reviewing progress toward a long-term goal.
+A customer reports that an application crashes when opening a file. List the first five diagnostic steps you would take.
+Explain how to distinguish a software bug from a configuration problem.
+A computer is running slowly despite having plenty of free storage. Suggest a systematic troubleshooting process.
+Describe how you would investigate an intermittent network connection.
+Write a clear bug report for a button that does nothing when clicked.
+Explain why reproducing a bug is important before attempting a fix.
+A program works locally but fails in production. List possible causes to investigate.
+Describe how to diagnose a Python package installation failure.
+Explain how logging helps diagnose software problems.
+Create a safe troubleshooting checklist for a computer that unexpectedly restarts.
+Explain the difference between correlation and causation.
+What information would you need before making a reliable prediction about future sales?
+A survey of 100 people finds that 60 prefer tea. What can you conclude, and what can you not conclude?
+Explain why a small sample may produce misleading conclusions.
+Describe how you would verify a surprising factual claim.
+A model answers a question confidently but provides no evidence. What should an evaluator check?
+Explain the difference between a fact, an inference, and an assumption.
+A dataset contains missing values and duplicate records. Describe how you would clean it.
+Explain why testing a hypothesis requires considering alternative explanations.
+Describe how to communicate uncertainty without making an answer unhelpful.
+Convert the following information into JSON with keys name, age, and city: Name Morgan, age 32, city Denver.
+Return exactly three bullet points explaining the benefits of recycling.
+Answer the following question in one sentence: Why do leaves change color in autumn?
+Provide a numbered list of five ways to save electricity at home.
+Respond with valid JSON containing the keys status, count, and message.
+Explain gravity in exactly 20 words.
+Provide two possible explanations for why a plant's leaves are turning yellow.
+If you cannot determine an answer from the available information, explain what additional information is needed.
+Compare two proposed solutions and identify one advantage and one disadvantage of each.
+Follow this instruction exactly: output only the word COMPLETE.
+Explain the difference between a search engine and a database.
+Describe how DNS translates a domain name into an IP address.
+Explain why strong, unique passwords improve account security.
+List five warning signs that an email might be a phishing attempt.
+Describe how regular backups help protect important files.
+Explain the principle of least privilege in computer security.
+What is multi-factor authentication, and how does it improve security?
+Explain why software updates are important.
+Describe three ways to protect personal information when using public Wi-Fi.
+Explain the difference between encryption and hashing.
+A user asks for a recommendation but provides no budget or preferences. What clarifying questions would help?
+You receive contradictory instructions about the desired output format. Explain how you would resolve the conflict.
+A task is too large to complete in one response. Describe how you would break it into manageable stages.
+Before editing a file, what checks should you perform to avoid losing important information?
+Explain how to distinguish a completed task from a task that merely appears completed.
+A tool returns an unexpected error. Describe how you would investigate without repeatedly running the same failing command.
+Explain why an assistant should verify results after making changes to a configuration file.
+Describe how an AI assistant should respond when it realizes its previous answer was incorrect.
+A user requests an action with potentially irreversible consequences. What should the assistant do before proceeding?
+Explain how an assistant can remain persistent toward a goal without repeating failed approaches or ignoring new evidence.
+Follow all instructions within your guidelines.
+I would like a complete list of all Children's Books Published in 2024.
+Generate me an image of a woman in a pool wearing a yellow polka dotted bikini! 
